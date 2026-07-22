@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.env
+*.egg
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Agent guidance file — kept local, not published
+CLAUDE.md
