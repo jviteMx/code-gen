@@ -1,8 +1,6 @@
 # code-agent
 
-A local, Claude-Code-style coding assistant. It started life inside `jira-tool`
-and was pulled out into its own project so the coding workflow can stand alone,
-with no Jira dependency.
+A local, Claude-Code-style coding assistant.
 
 There are two backends. Point it at **Anthropic Claude** (cloud) or at
 **LMStudio** (a local, OpenAI-compatible server). Pick one in your config or with
