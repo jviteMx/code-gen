@@ -24,7 +24,12 @@ def main() -> None:
         help="AI provider to use (default: from config)",
     )
     parser.add_argument("--prompt", default=None, help="Initial prompt/instruction to start with")
+    parser.add_argument("--oneshot", action="store_true",
+                        help="Run --prompt as a single headless task, then exit (no REPL)")
     parser.add_argument("--no-plan", action="store_true", help="Skip plan mode and execute directly")
+    parser.add_argument("--plan", action="store_true",
+                        help="Force plan mode, overriding --no-plan (lets wrappers that "
+                             "default to --no-plan, like the benchmark, re-enable it)")
     parser.add_argument("--no-stream", action="store_true", help="Disable streaming output")
     parser.add_argument("--yes", action="store_true", help="Auto-approve plans (skip the approval prompt)")
     parser.add_argument(
@@ -55,6 +60,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.oneshot and not args.prompt:
+        parser.error("--oneshot requires --prompt")  # exits 2
+
     if args.path == "configure":
         from code_agent.config import run_configure
         run_configure()
@@ -78,7 +86,7 @@ def main() -> None:
         anthropic_api_key=config.anthropic_api_key,
         anthropic_model=config.anthropic_model,
         provider=provider,
-        plan_mode=not args.no_plan,
+        plan_mode=args.plan or not args.no_plan,
         context_override=args.context,
         max_rounds_override=args.max_rounds,
         stream=not args.no_stream,
@@ -90,6 +98,7 @@ def main() -> None:
         auto_orchestrate=args.auto,
         preflight=not args.no_preflight,
         request_timeout=args.timeout if args.timeout is not None else float(config.request_timeout or 600),
+        oneshot=args.oneshot,
     )
 
 

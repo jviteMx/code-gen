@@ -9,6 +9,9 @@ build/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.schemathesis/
+.jt/
+.claude/
 
 # Agent guidance file — kept local, not published
 CLAUDE.md

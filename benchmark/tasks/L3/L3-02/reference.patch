@@ -1,0 +1,62 @@
+diff --git a/backend/app/routers/columns.py b/backend/app/routers/columns.py
+index b02dc1e..6b7af0a 100755
+--- a/backend/app/routers/columns.py
++++ b/backend/app/routers/columns.py
+@@ -31,5 +31,8 @@ def delete_column(column_id: int, conn: sqlite3.Connection = Depends(get_db)):
+ 
+ @router.get("/columns/{column_id}/cards", response_model=list[CardOut])
+ def list_cards(column_id: int, sort: str | None = None,
++               priority: str | None = None, overdue: bool | None = None,
++               q: str | None = None,
+                conn: sqlite3.Connection = Depends(get_db)):
+-    return card_service.list_cards(conn, column_id, sort=sort)
++    return card_service.list_cards(conn, column_id, sort=sort,
++                                   priority=priority, overdue=overdue, q=q)
+diff --git a/backend/app/services/cards.py b/backend/app/services/cards.py
+index f025081..bc2b048 100755
+--- a/backend/app/services/cards.py
++++ b/backend/app/services/cards.py
+@@ -3,10 +3,12 @@
+ from __future__ import annotations
+ 
+ import sqlite3
++from datetime import date
+ 
+ from fastapi import HTTPException
+ 
+ from ..models import CardIn, CardUpdate
++from ..utils.text import parse_due_date
+ from .activity import ActivityLog
+ 
+ 
+@@ -21,16 +23,29 @@ def get_card(conn: sqlite3.Connection, card_id: int) -> dict:
+     return _row_to_dict(row)
+ 
+ 
+-def list_cards(conn: sqlite3.Connection, column_id: int, sort: str | None = None) -> list[dict]:
++def list_cards(conn: sqlite3.Connection, column_id: int, sort: str | None = None,
++               priority: str | None = None, overdue: bool | None = None,
++               q: str | None = None) -> list[dict]:
+     rows = conn.execute(
+         "SELECT * FROM cards WHERE column_id = ? ORDER BY position, id", (column_id,)
+     ).fetchall()
+     cards = [_row_to_dict(r) for r in rows]
++    if priority is not None:
++        cards = [c for c in cards if c["priority"] == priority]
++    if q is not None:
++        cards = [c for c in cards if q.lower() in c["title"].lower()]
++    if overdue is not None:
++        cards = [c for c in cards if _is_overdue(c) == overdue]
+     if sort == "priority":
+         cards = sorted_by_priority(cards)
+     return cards
+ 
+ 
++def _is_overdue(card: dict) -> bool:
++    due = parse_due_date(card.get("due_date"))
++    return bool(due and due < date.today())
++
++
+ def sorted_by_priority(cards: list[dict]) -> list[dict]:
+     """Order cards most-urgent first (high before medium before low)."""
+     return sorted(cards, key=lambda c: c["priority"])

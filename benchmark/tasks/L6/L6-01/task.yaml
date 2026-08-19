@@ -1,0 +1,10 @@
+id: L6-01
+level: 6
+title: Overdue card styling
+timeout_s: 1500
+request_timeout_s: 240
+frontend: true
+graders: [playwright]
+expected_files:
+  - frontend/src/components/Card.jsx
+  - frontend/src/styles/board.css

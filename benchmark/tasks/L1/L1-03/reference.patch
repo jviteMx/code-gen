@@ -1,0 +1,18 @@
+diff --git a/backend/app/services/cards.py b/backend/app/services/cards.py
+index f025081..e184368 100755
+--- a/backend/app/services/cards.py
++++ b/backend/app/services/cards.py
+@@ -31,9 +31,12 @@ def list_cards(conn: sqlite3.Connection, column_id: int, sort: str | None = None
+     return cards
+ 
+ 
++_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
++
++
+ def sorted_by_priority(cards: list[dict]) -> list[dict]:
+     """Order cards most-urgent first (high before medium before low)."""
+-    return sorted(cards, key=lambda c: c["priority"])
++    return sorted(cards, key=lambda c: _PRIORITY_RANK.get(c["priority"], 99))
+ 
+ 
+ def create_card(conn: sqlite3.Connection, column_id: int, data: CardIn) -> dict:

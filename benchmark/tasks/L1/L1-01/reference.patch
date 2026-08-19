@@ -1,0 +1,22 @@
+diff --git a/backend/app/utils/text.py b/backend/app/utils/text.py
+index 147b005..96da122 100755
+--- a/backend/app/utils/text.py
++++ b/backend/app/utils/text.py
+@@ -8,12 +8,15 @@ from datetime import date
+ def slugify(text: str) -> str:
+     """Turn a title into a URL-friendly slug."""
+     out = []
++    prev_sep = False
+     for ch in text.strip().lower():
+         if ch.isalnum():
+             out.append(ch)
+-        else:
++            prev_sep = False
++        elif not prev_sep:
+             out.append("-")
+-    return "".join(out)
++            prev_sep = True
++    return "".join(out).strip("-")
+ 
+ 
+ def parse_due_date(value: str | None) -> date | None:

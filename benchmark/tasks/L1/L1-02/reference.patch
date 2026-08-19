@@ -1,0 +1,21 @@
+diff --git a/backend/app/utils/text.py b/backend/app/utils/text.py
+index 147b005..e11feb5 100755
+--- a/backend/app/utils/text.py
++++ b/backend/app/utils/text.py
+@@ -16,6 +16,16 @@ def slugify(text: str) -> str:
+     return "".join(out)
+ 
+ 
++def truncate(text: str, n: int) -> str:
++    """Word-safe truncation with a trailing ellipsis; result fits in n chars."""
++    if len(text) <= n:
++        return text
++    cut = text[: n - 1]
++    if " " in cut and not text[n - 1 : n].isspace():
++        cut = cut.rsplit(" ", 1)[0]
++    return cut.rstrip() + "\u2026"
++
++
+ def parse_due_date(value: str | None) -> date | None:
+     """Parse an ISO date string; returns None for empty/invalid values."""
+     if not value:

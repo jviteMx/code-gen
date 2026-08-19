@@ -1,6 +1,8 @@
 # code-agent
 
-A local, Claude-Code-style coding assistant.
+A local, Claude-Code-style coding assistant. It started life inside `jira-tool`
+and was pulled out into its own project so the coding workflow can stand alone,
+with no Jira dependency.
 
 There are two backends. Point it at **Anthropic Claude** (cloud) or at
 **LMStudio** (a local, OpenAI-compatible server). Pick one in your config or with
@@ -39,6 +41,7 @@ code-agent . --provider claude   # force backend for this session
 code-agent . --prompt "add a healthcheck endpoint"
 code-agent . --yes               # auto-approve plans (unattended)
 code-agent . --no-stream         # disable streaming output
+code-agent . --oneshot --prompt "fix the failing test" --yes --no-plan   # headless one-task run
 ca .                             # short alias
 ```
 
@@ -288,7 +291,8 @@ else is revision feedback.
 | Command | Action |
 |---|---|
 | `/models` | list available models (local **and** Claude) with params, context, loaded status |
-| `/model N` (alias `/load N`) | set the main model to number `N` from `/models`. A model that is already loaded (or a cloud/Claude model) is selected in place with no reload; only an unloaded local model is loaded first. Updates the context window. |
+| `/model N` (alias `/load N`) | set the main model to number `N` from `/models`. A model that is already loaded (or a cloud/Claude model) is selected in place with no reload; only an unloaded local model is loaded first — requesting a **32k context** (LM Studio's own API default is a useless 4096) and reporting the context the server actually granted. Updates the context window. After switching away from a loaded local model you're asked whether to unload it (default **yes** after a fresh load — VRAM is finite; default **no** when switching between two already-loaded models, since orchestration can use both). Running `/model N` again on the current main model **toggles it**: confirms, unloads, and falls back to another loaded model if one exists. |
+| `/benchmark [args]` (alias `/bench`) | run the task-suite benchmark (`benchmark/`) against the current main model and stream the results. Args pass through to the runner: `/benchmark --levels 1-3 --trials 3`, `/benchmark --tasks L4-01`, `/benchmark oracle` (validate the suite without a model). See [Benchmark](#benchmark). |
 
 Claude shows up in `/models` and `/agents` whenever an Anthropic API key is
 configured, no matter which provider is the main one, so you can select or assign
@@ -316,7 +320,8 @@ formats); your session memory stays.
 | Flag | Effect |
 |---|---|
 | `--provider claude\|lmstudio` | force the backend for this session |
-| `--prompt "…"` | seed the first message |
+| `--prompt "…"` | extra task context injected into the system prompt; with `--oneshot` it becomes the (single) user message |
+| `--oneshot` | headless mode: run `--prompt` as one task, then exit (no REPL). Exits nonzero on fatal init errors and writes `<workdir>/.jt/oneshot_stats.json` with request/token counts. Used by `jt start` automation and the benchmark. |
 | `--no-plan` | start in direct mode |
 | `--yes` | auto-approve plans and auto-authorize agent spawns |
 | `--no-stream` | disable streaming output |
@@ -376,6 +381,70 @@ The `llm` module is the only place that knows each vendor's wire format. The loo
 speaks a normalized `Turn(content, tool_calls)`, and each client writes history
 back in its vendor's shape. One thing to watch: all of a turn's Anthropic
 `tool_result` blocks go into a single user message.
+
+## Benchmark
+
+`benchmark/` contains a scientific benchmark for comparing models on real coding
+tasks. It runs code-agent headlessly (via `--oneshot`) against a deterministic
+template web app (FastAPI + SQLite backend, React/Vite frontend) across **seven
+change levels** — function, class, module, service, API contract, frontend/CSS,
+architecture — 18 tasks total, graded SWE-bench-style with hidden fail-to-pass
+tests, regression suites, Playwright browser assertions, and OpenAPI fuzzing
+(schemathesis). Scoring weights, statistics (pass@k, task-clustered mean ± SE),
+and all literature references are documented in
+[`benchmark/CRITERIA.md`](benchmark/CRITERIA.md).
+
+**Setup (once):**
+
+```bash
+pip install -e ".[bench]"
+# Node >= 20 on PATH; LM Studio running with the server enabled
+# (the chromium browser for grading auto-downloads on first use, ~120 MB;
+#  fresh Linux/WSL may need `sudo playwright install-deps chromium` once)
+```
+
+**The comparison workflow, entirely in-session:**
+
+```
+/models          # see what's available
+/model 2         # pick the model to test
+/benchmark       # run the full suite against it (add --trials 3 for error bars)
+# …swap: /model 3, /benchmark again — each run is tagged with the model identity
+```
+
+`/benchmark` streams progress and drops `results.json` + `report.md` (per-level
+scores, pass@1, failure taxonomy) under `benchmark/results/<run_id>/`, one directory
+per run, so back-to-back runs of different models are directly comparable.
+
+Common variants (args pass straight through, same as the CLI below):
+
+```
+/benchmark --levels 1-3          # quick subset
+/benchmark --trials 3            # statistically meaningful comparison
+/benchmark --tasks L4-01,L6-02   # specific tasks
+/benchmark oracle                # no model: validate the suite via reference patches
+/benchmark --timeout-scale 3     # stretch time budgets (slow/offloaded models)
+/benchmark --agent-args "--plan"               # benchmark the plan→execute workflow
+/benchmark --agent-args "--plan --supervise"   # + critic review of plans and diffs
+/benchmark --agent-args "--auto"               # model self-selects orchestration per task
+```
+
+Orchestrated configs are labeled and stored separately from bare-loop runs — see
+"Benchmarking orchestrated configurations" and "Reading the results" in
+[`benchmark/README.md`](benchmark/README.md) for the experiment matrix and how to
+interpret scores, pass@1, and the failure taxonomy.
+
+The same runner works standalone, without a session:
+
+```bash
+python -m benchmark.harness.run --trials 3 [--lmstudio-url http://HOST:1234]
+python -m benchmark.harness.run --oracle     # must resolve 18/18 at score 1.00
+```
+
+Full details — requirements table, installation, what auto-downloads on first run,
+a troubleshooting table for the common failures (missing deps, chromium, LM Studio
+not reachable, VRAM contention), trial lifecycle, and how to add tasks:
+[`benchmark/README.md`](benchmark/README.md).
 
 ## Tests
 

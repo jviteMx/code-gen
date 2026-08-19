@@ -1,0 +1,71 @@
+diff --git a/backend/app/services/cards.py b/backend/app/services/cards.py
+index f025081..f2fe1f1 100755
+--- a/backend/app/services/cards.py
++++ b/backend/app/services/cards.py
+@@ -8,6 +8,7 @@ from fastapi import HTTPException
+ 
+ from ..models import CardIn, CardUpdate
+ from .activity import ActivityLog
++from .positions import normalize_column
+ 
+ 
+ def _row_to_dict(row: sqlite3.Row) -> dict:
+@@ -63,8 +64,9 @@ def update_card(conn: sqlite3.Connection, card_id: int, data: CardUpdate) -> dic
+ 
+ 
+ def delete_card(conn: sqlite3.Connection, card_id: int) -> None:
+-    get_card(conn, card_id)
++    card = get_card(conn, card_id)
+     conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
++    normalize_column(conn, card["column_id"])
+     ActivityLog(conn).record("card_deleted", "card", card_id)
+ 
+ 
+@@ -73,13 +75,19 @@ def move_card(conn: sqlite3.Connection, card_id: int, column_id: int, position:
+     col = conn.execute("SELECT id FROM columns WHERE id = ?", (column_id,)).fetchone()
+     if col is None:
+         raise HTTPException(status_code=404, detail="column not found")
+-    if position is None:
+-        position = conn.execute(
+-            "SELECT COALESCE(MAX(position) + 1, 0) FROM cards WHERE column_id = ?", (column_id,)
+-        ).fetchone()[0]
+-    conn.execute(
+-        "UPDATE cards SET column_id = ?, position = ? WHERE id = ?",
+-        (column_id, position, card_id),
+-    )
++    old_column = get_card(conn, card_id)["column_id"]
++    conn.execute("UPDATE cards SET column_id = ? WHERE id = ?", (column_id, card_id))
++    ids = [r["id"] for r in conn.execute(
++        "SELECT id FROM cards WHERE column_id = ? AND id != ? ORDER BY position, id",
++        (column_id, card_id),
++    ).fetchall()]
++    if position is None or position >= len(ids):
++        ids.append(card_id)
++    else:
++        ids.insert(max(0, position), card_id)
++    for idx, cid in enumerate(ids):
++        conn.execute("UPDATE cards SET position = ? WHERE id = ?", (idx, cid))
++    if old_column != column_id:
++        normalize_column(conn, old_column)
+     ActivityLog(conn).record("card_moved", "card", card_id)
+     return get_card(conn, card_id)
+diff --git a/backend/app/services/positions.py b/backend/app/services/positions.py
+new file mode 100644
+index 0000000..af8b431
+--- /dev/null
++++ b/backend/app/services/positions.py
+@@ -0,0 +1,14 @@
++"""Column position normalization: keep card positions packed as 0..n-1."""
++
++from __future__ import annotations
++
++import sqlite3
++
++
++def normalize_column(conn: sqlite3.Connection, column_id: int) -> None:
++    """Re-pack the column's card positions to 0..n-1, preserving order (ties by id)."""
++    rows = conn.execute(
++        "SELECT id FROM cards WHERE column_id = ? ORDER BY position, id", (column_id,)
++    ).fetchall()
++    for idx, row in enumerate(rows):
++        conn.execute("UPDATE cards SET position = ? WHERE id = ?", (idx, row["id"]))

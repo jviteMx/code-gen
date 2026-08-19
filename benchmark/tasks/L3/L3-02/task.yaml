@@ -1,0 +1,10 @@
+id: L3-02
+level: 3
+title: Composable card filters
+timeout_s: 1200
+request_timeout_s: 240
+frontend: false
+graders: [pytest]
+expected_files:
+  - backend/app/services/cards.py
+  - backend/app/routers/columns.py

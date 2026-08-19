@@ -1,0 +1,19 @@
+diff --git a/frontend/src/styles/board.css b/frontend/src/styles/board.css
+index 10b37c8..93c7da0 100755
+--- a/frontend/src/styles/board.css
++++ b/frontend/src/styles/board.css
+@@ -115,3 +115,14 @@
+ .new-card-submit:hover {
+   background: #1d4ed8;
+ }
++
++@media (max-width: 699px) {
++  .board {
++    flex-direction: column;
++    overflow-x: hidden;
++  }
++
++  .column {
++    width: 100%;
++  }
++}

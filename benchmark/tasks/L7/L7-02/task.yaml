@@ -1,0 +1,16 @@
+id: L7-02
+level: 7
+title: Full-stack soft delete with undo
+timeout_s: 1800
+request_timeout_s: 300
+frontend: true
+graders: [pytest, playwright]
+expected_files:
+  - backend/app/schema.sql
+  - backend/app/services/cards.py
+  - backend/app/routers/cards.py
+  - frontend/src/api.js
+  - frontend/src/App.jsx
+  - frontend/src/components/Card.jsx
+  - frontend/src/components/RecentlyDeleted.jsx
+  - frontend/src/styles/board.css

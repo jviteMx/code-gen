@@ -1,0 +1,10 @@
+id: L3-01
+level: 3
+title: Position normalization module
+timeout_s: 1200
+request_timeout_s: 240
+frontend: false
+graders: [pytest]
+expected_files:
+  - backend/app/services/positions.py
+  - backend/app/services/cards.py

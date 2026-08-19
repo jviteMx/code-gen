@@ -1,0 +1,10 @@
+id: L6-03
+level: 6
+title: Live column count chips
+timeout_s: 1500
+request_timeout_s: 240
+frontend: true
+graders: [playwright]
+expected_files:
+  - frontend/src/components/Column.jsx
+  - frontend/src/styles/board.css

@@ -1,0 +1,15 @@
+id: L7-01
+level: 7
+title: Extract repository layer
+timeout_s: 1800
+request_timeout_s: 300
+frontend: false
+graders: [pytest]
+expected_files:
+  - backend/app/repositories/__init__.py
+  - backend/app/repositories/boards.py
+  - backend/app/repositories/cards.py
+  - backend/app/repositories/activity.py
+  - backend/app/services/boards.py
+  - backend/app/services/cards.py
+  - backend/app/services/activity.py

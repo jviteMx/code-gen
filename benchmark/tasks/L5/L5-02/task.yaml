@@ -1,0 +1,16 @@
+id: L5-02
+level: 5
+title: Move endpoint query params to JSON body
+timeout_s: 1500
+request_timeout_s: 240
+frontend: true
+graders: [pytest, schemathesis]
+schemathesis_paths:
+  - /api/cards/{card_id}/move
+expected_files:
+  - backend/app/models.py
+  - backend/app/routers/cards.py
+  - frontend/src/api.js
+p2p_ignore:
+  - backend/tests/test_api_cards.py::test_move_card_endpoint
+  - backend/tests/test_api_cards.py::test_move_card_unknown_target

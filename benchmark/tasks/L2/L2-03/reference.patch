@@ -1,0 +1,26 @@
+diff --git a/backend/app/services/activity.py b/backend/app/services/activity.py
+index a8b1ad9..2d6725f 100755
+--- a/backend/app/services/activity.py
++++ b/backend/app/services/activity.py
+@@ -16,8 +16,18 @@ class ActivityLog:
+         )
+ 
+     def recent(self, limit: int = 20) -> list[dict]:
+-        """The most recent activity entries."""
++        """The most recent entries, newest first, collapsing consecutive duplicates."""
+         rows = self.conn.execute(
+-            "SELECT * FROM activity ORDER BY id LIMIT ?", (limit,)
++            "SELECT * FROM activity ORDER BY id DESC"
+         ).fetchall()
+-        return [dict(r) for r in rows]
++        out: list[dict] = []
++        prev_key = None
++        for row in rows:
++            entry = dict(row)
++            key = (entry["action"], entry["entity_type"], entry["entity_id"])
++            if key != prev_key:
++                out.append(entry)
++                prev_key = key
++            if len(out) >= limit:
++                break
++        return out

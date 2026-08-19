@@ -1,0 +1,32 @@
+diff --git a/frontend/src/components/Column.jsx b/frontend/src/components/Column.jsx
+index e155be2..66c7a7b 100755
+--- a/frontend/src/components/Column.jsx
++++ b/frontend/src/components/Column.jsx
+@@ -6,6 +6,7 @@ export default function Column({ column, onChange }) {
+     <section className="column" data-column-id={column.id}>
+       <div className="column-header">
+         <h2 className="column-title">{column.name}</h2>
++        <span className="count-chip">{column.cards.length}</span>
+       </div>
+       <div className="card-list">
+         {column.cards.map((card) => (
+diff --git a/frontend/src/styles/board.css b/frontend/src/styles/board.css
+index 10b37c8..1d88f62 100755
+--- a/frontend/src/styles/board.css
++++ b/frontend/src/styles/board.css
+@@ -28,6 +28,15 @@
+   color: #334155;
+ }
+ 
++.count-chip {
++  font-size: 11px;
++  font-weight: 600;
++  background: #cbd5e1;
++  color: #334155;
++  border-radius: 999px;
++  padding: 2px 8px;
++}
++
+ .card-list {
+   display: flex;
+   flex-direction: column;

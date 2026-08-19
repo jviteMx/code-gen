@@ -214,13 +214,15 @@ def test_model_loads_when_not_loaded(tmp_path, monkeypatch):
         def __init__(self, *a, **k):
             pass
 
-        def load_model(self, key):
+        def load_model(self, key, context_length=None, **kw):
             calls["loaded"] = key
-            return {"success": True}
+            calls["context"] = context_length
+            return {"success": True, "context_length": context_length}
 
     monkeypatch.setattr("code_agent.lmstudio.LMStudioManager", Mgr)
     s._cmd_load("2")
     assert calls["loaded"] == "C"
+    assert calls["context"] == 4096  # min(32768, model max of 4096)
     assert s.client.model == "C"
 
 

@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.jt/
+__pycache__/
+*.pyc
+*.db

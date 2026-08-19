@@ -1,0 +1,93 @@
+diff --git a/backend/app/models.py b/backend/app/models.py
+index d3a2f4d..003ae59 100755
+--- a/backend/app/models.py
++++ b/backend/app/models.py
+@@ -60,6 +60,17 @@ class BoardOut(BaseModel):
+     columns: list[ColumnOut] = []
+ 
+ 
++class ColumnStats(BaseModel):
++    id: int
++    name: str
++    card_count: int
++
++
++class BoardStats(BaseModel):
++    columns: list[ColumnStats]
++    overdue_count: int
++
++
+ class ActivityOut(BaseModel):
+     id: int
+     action: str
+diff --git a/backend/app/routers/boards.py b/backend/app/routers/boards.py
+index 8255397..d5f3b82 100755
+--- a/backend/app/routers/boards.py
++++ b/backend/app/routers/boards.py
+@@ -7,7 +7,7 @@ import sqlite3
+ from fastapi import APIRouter, Depends
+ 
+ from ..db import get_db
+-from ..models import ActivityOut, BoardIn, BoardOut, BoardSummary
++from ..models import ActivityOut, BoardIn, BoardOut, BoardStats, BoardSummary
+ from ..services import boards as board_service
+ from ..services.activity import ActivityLog
+ 
+@@ -29,6 +29,11 @@ def get_board(board_id: int, conn: sqlite3.Connection = Depends(get_db)):
+     return board_service.get_board(conn, board_id)
+ 
+ 
++@router.get("/boards/{board_id}/stats", response_model=BoardStats)
++def board_stats(board_id: int, conn: sqlite3.Connection = Depends(get_db)):
++    return board_service.get_stats(conn, board_id)
++
++
+ @router.get("/activity", response_model=list[ActivityOut])
+ def recent_activity(limit: int = 20, conn: sqlite3.Connection = Depends(get_db)):
+     return ActivityLog(conn).recent(limit)
+diff --git a/backend/app/services/boards.py b/backend/app/services/boards.py
+index 365c903..7e4ab65 100755
+--- a/backend/app/services/boards.py
++++ b/backend/app/services/boards.py
+@@ -3,11 +3,12 @@
+ from __future__ import annotations
+ 
+ import sqlite3
++from datetime import date
+ 
+ from fastapi import HTTPException
+ 
+ from ..models import BoardIn, ColumnIn
+-from ..utils.text import slugify
++from ..utils.text import parse_due_date, slugify
+ from .activity import ActivityLog
+ from .cards import list_cards
+ 
+@@ -29,6 +30,27 @@ def get_board(conn: sqlite3.Connection, board_id: int) -> dict:
+     return board
+ 
+ 
++def get_stats(conn: sqlite3.Connection, board_id: int) -> dict:
++    if conn.execute("SELECT 1 FROM boards WHERE id = ?", (board_id,)).fetchone() is None:
++        raise HTTPException(status_code=404, detail="board not found")
++    cols = conn.execute(
++        "SELECT c.id, c.name, COUNT(k.id) AS card_count FROM columns c "
++        "LEFT JOIN cards k ON k.column_id = c.id "
++        "WHERE c.board_id = ? GROUP BY c.id ORDER BY c.position, c.id", (board_id,)
++    ).fetchall()
++    today = date.today()
++    overdue = 0
++    rows = conn.execute(
++        "SELECT k.due_date FROM cards k JOIN columns c ON k.column_id = c.id "
++        "WHERE c.board_id = ?", (board_id,)
++    ).fetchall()
++    for r in rows:
++        due = parse_due_date(r["due_date"])
++        if due and due < today:
++            overdue += 1
++    return {"columns": [dict(c) for c in cols], "overdue_count": overdue}
++
++
+ def create_board(conn: sqlite3.Connection, data: BoardIn) -> dict:
+     slug = slugify(data.name)
+     if conn.execute("SELECT 1 FROM boards WHERE slug = ?", (slug,)).fetchone():

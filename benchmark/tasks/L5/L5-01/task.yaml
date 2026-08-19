@@ -1,0 +1,13 @@
+id: L5-01
+level: 5
+title: Board stats endpoint in OpenAPI
+timeout_s: 1200
+request_timeout_s: 240
+frontend: false
+graders: [pytest, schemathesis]
+schemathesis_paths:
+  - /api/boards/{board_id}/stats
+expected_files:
+  - backend/app/models.py
+  - backend/app/services/boards.py
+  - backend/app/routers/boards.py

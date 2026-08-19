@@ -5,7 +5,9 @@ run_coding_session is the public entry point used by the CLI and by jt start.
 
 from __future__ import annotations
 
+import json
 import os
+import sys
 from pathlib import Path
 
 from openai import OpenAI
@@ -46,9 +48,18 @@ def run_coding_session(
     auto_orchestrate: bool = False,
     preflight: bool = True,
     request_timeout: float = 600.0,
+    oneshot: bool = False,
 ) -> None:
-    """Run an interactive coding session."""
+    """Run an interactive coding session.
+
+    With oneshot=True, `context` is treated as the single task to run: it becomes
+    the first (and only) user message instead of the {context} system-prompt slot,
+    the REPL is skipped, and the process is suitable for headless callers.
+    """
     workdir = str(Path(workdir).resolve())
+    oneshot_prompt = context if oneshot else None
+    if oneshot:
+        context = ""
 
     memory = SessionMemory(workdir)
     memory.load()
@@ -70,7 +81,7 @@ def run_coding_session(
         except Exception as e:
             if use_anthropic:
                 print(f"  [Error] Failed to initialize Claude: {e}")
-                return
+                sys.exit(1)
             print(f"  [warn] Claude unavailable ({e}); continuing without it.")
 
     normalized_url = lmstudio_url.rstrip("/")
@@ -84,7 +95,7 @@ def run_coding_session(
     if use_anthropic:
         if anthropic_client is None:
             print("  [Error] Claude provider selected but no API key found.")
-            return
+            sys.exit(1)
         client = anthropic_client
         model_name = anthropic_model
     else:
@@ -142,9 +153,30 @@ def run_coding_session(
                 f"mix them with /model N or /assign main|critic|judge N.")
     if preflight:
         session.startup_preflight()
+    if oneshot:
+        session.run_oneshot(oneshot_prompt or "")
+        _write_oneshot_stats(workdir, tracker, provider, model_name, memory)
+        return
     try:
         session.run()
     except SystemExit:
+        pass
+
+
+def _write_oneshot_stats(workdir: str, tracker, provider: str, model_name: str, memory) -> None:
+    """Drop machine-readable run stats for headless callers (benchmarks, jt start)."""
+    try:
+        stats_dir = Path(workdir) / ".jt"
+        stats_dir.mkdir(parents=True, exist_ok=True)
+        (stats_dir / "oneshot_stats.json").write_text(json.dumps({
+            "provider": provider,
+            "model": model_name,
+            "total_requests": tracker.total_requests,
+            "used_tokens": tracker.used_tokens,
+            "total_output_tokens": tracker.total_output_tokens,
+            "errors_encountered": memory.errors_encountered,
+        }, indent=2))
+    except OSError:
         pass
 
 

@@ -1,8 +1,7 @@
 """Tests for the coding tool executor."""
 
 import json
-import tempfile
-from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -72,6 +71,25 @@ def test_search_finds_match(ex):
     _run(ex, "write_file", path="a.py", content="def target():\n    return 1\n")
     r = _run(ex, "search_files", pattern="target")
     assert r["count"] >= 1 and r["matches"][0]["file"] == "a.py"
+
+
+def test_search_ripgrep_parses_windows_drive_paths(ex, monkeypatch):
+    event = {
+        "type": "match",
+        "data": {
+            "path": {"text": str(ex._workdir / "a.py")},
+            "lines": {"text": "target = True\n"},
+            "line_number": 7,
+        },
+    }
+    completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(event), stderr="")
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    result = ex._search_ripgrep("rg", "target", ex._workdir, None)
+
+    assert result["matches"] == [
+        {"file": "a.py", "line": 7, "text": "target = True"}
+    ]
 
 
 def test_list_skips_junk_dirs(ex):

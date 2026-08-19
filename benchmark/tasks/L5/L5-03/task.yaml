@@ -1,0 +1,12 @@
+id: L5-03
+level: 5
+title: Paginate column card listing
+timeout_s: 1200
+request_timeout_s: 240
+frontend: false
+graders: [pytest, schemathesis]
+schemathesis_paths:
+  - /api/columns/{column_id}/cards
+expected_files:
+  - backend/app/routers/columns.py
+  - backend/app/services/cards.py

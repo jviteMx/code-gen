@@ -1,0 +1,47 @@
+diff --git a/backend/app/models.py b/backend/app/models.py
+index d3a2f4d..ba998bc 100755
+--- a/backend/app/models.py
++++ b/backend/app/models.py
+@@ -2,7 +2,9 @@
+ 
+ from __future__ import annotations
+ 
+-from pydantic import BaseModel
++from datetime import date
++
++from pydantic import BaseModel, field_validator
+ 
+ 
+ class CardIn(BaseModel):
+@@ -11,6 +13,31 @@ class CardIn(BaseModel):
+     priority: str = "medium"
+     due_date: str | None = None
+ 
++    @field_validator("title")
++    @classmethod
++    def _validate_title(cls, v: str) -> str:
++        v = v.strip()
++        if not v or len(v) > 120:
++            raise ValueError("title must be 1-120 characters after stripping")
++        return v
++
++    @field_validator("priority")
++    @classmethod
++    def _validate_priority(cls, v: str) -> str:
++        if v not in ("low", "medium", "high"):
++            raise ValueError("priority must be low, medium, or high")
++        return v
++
++    @field_validator("due_date")
++    @classmethod
++    def _validate_due_date(cls, v: str | None) -> str | None:
++        if v is None:
++            return v
++        parsed = date.fromisoformat(v)
++        if parsed < date.today():
++            raise ValueError("due_date must not be in the past")
++        return v
++
+ 
+ class CardUpdate(BaseModel):
+     title: str | None = None

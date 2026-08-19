@@ -1,0 +1,361 @@
+diff --git a/backend/app/repositories/__init__.py b/backend/app/repositories/__init__.py
+new file mode 100644
+index 0000000..13600da
+--- /dev/null
++++ b/backend/app/repositories/__init__.py
+@@ -0,0 +1 @@
++"""Persistence layer: all SQL lives here."""
+diff --git a/backend/app/repositories/activity.py b/backend/app/repositories/activity.py
+new file mode 100644
+index 0000000..09f5789
+--- /dev/null
++++ b/backend/app/repositories/activity.py
+@@ -0,0 +1,17 @@
++"""Activity table access."""
++
++from __future__ import annotations
++
++import sqlite3
++
++
++def insert_event(conn: sqlite3.Connection, action: str, entity_type: str, entity_id: int) -> None:
++    conn.execute(
++        "INSERT INTO activity (action, entity_type, entity_id) VALUES (?, ?, ?)",
++        (action, entity_type, entity_id),
++    )
++
++
++def fetch_events(conn: sqlite3.Connection, limit: int) -> list[dict]:
++    rows = conn.execute("SELECT * FROM activity ORDER BY id LIMIT ?", (limit,)).fetchall()
++    return [dict(r) for r in rows]
+diff --git a/backend/app/repositories/boards.py b/backend/app/repositories/boards.py
+new file mode 100644
+index 0000000..7678db3
+--- /dev/null
++++ b/backend/app/repositories/boards.py
+@@ -0,0 +1,59 @@
++"""Boards and columns table access."""
++
++from __future__ import annotations
++
++import sqlite3
++
++
++def fetch_boards(conn: sqlite3.Connection) -> list[dict]:
++    rows = conn.execute("SELECT id, name, slug FROM boards ORDER BY id").fetchall()
++    return [dict(r) for r in rows]
++
++
++def fetch_board(conn: sqlite3.Connection, board_id: int) -> sqlite3.Row | None:
++    return conn.execute("SELECT * FROM boards WHERE id = ?", (board_id,)).fetchone()
++
++
++def slug_exists(conn: sqlite3.Connection, slug: str) -> bool:
++    return conn.execute("SELECT 1 FROM boards WHERE slug = ?", (slug,)).fetchone() is not None
++
++
++def insert_board(conn: sqlite3.Connection, name: str, slug: str) -> int:
++    return conn.execute("INSERT INTO boards (name, slug) VALUES (?, ?)", (name, slug)).lastrowid
++
++
++def fetch_columns(conn: sqlite3.Connection, board_id: int) -> list[sqlite3.Row]:
++    return conn.execute(
++        "SELECT * FROM columns WHERE board_id = ? ORDER BY position, id", (board_id,)
++    ).fetchall()
++
++
++def fetch_column(conn: sqlite3.Connection, column_id: int) -> sqlite3.Row | None:
++    return conn.execute("SELECT * FROM columns WHERE id = ?", (column_id,)).fetchone()
++
++
++def next_column_position(conn: sqlite3.Connection, board_id: int) -> int:
++    return conn.execute(
++        "SELECT COALESCE(MAX(position) + 1, 0) FROM columns WHERE board_id = ?", (board_id,)
++    ).fetchone()[0]
++
++
++def insert_column(conn: sqlite3.Connection, board_id: int, name: str, position: int,
++                  wip_limit: int | None) -> int:
++    cur = conn.execute(
++        "INSERT INTO columns (board_id, name, position, wip_limit) VALUES (?, ?, ?, ?)",
++        (board_id, name, position, wip_limit),
++    )
++    return cur.lastrowid
++
++
++def update_column(conn: sqlite3.Connection, column_id: int, name: str,
++                  wip_limit: int | None) -> None:
++    conn.execute(
++        "UPDATE columns SET name = ?, wip_limit = ? WHERE id = ?",
++        (name, wip_limit, column_id),
++    )
++
++
++def delete_column(conn: sqlite3.Connection, column_id: int) -> None:
++    conn.execute("DELETE FROM columns WHERE id = ?", (column_id,))
+diff --git a/backend/app/repositories/cards.py b/backend/app/repositories/cards.py
+new file mode 100644
+index 0000000..01b7d7e
+--- /dev/null
++++ b/backend/app/repositories/cards.py
+@@ -0,0 +1,47 @@
++"""Cards table access."""
++
++from __future__ import annotations
++
++import sqlite3
++
++
++def fetch_card(conn: sqlite3.Connection, card_id: int) -> sqlite3.Row | None:
++    return conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
++
++
++def fetch_cards(conn: sqlite3.Connection, column_id: int) -> list[sqlite3.Row]:
++    return conn.execute(
++        "SELECT * FROM cards WHERE column_id = ? ORDER BY position, id", (column_id,)
++    ).fetchall()
++
++
++def next_position(conn: sqlite3.Connection, column_id: int) -> int:
++    return conn.execute(
++        "SELECT COALESCE(MAX(position) + 1, 0) FROM cards WHERE column_id = ?", (column_id,)
++    ).fetchone()[0]
++
++
++def insert_card(conn: sqlite3.Connection, column_id: int, title: str, description: str,
++                priority: str, due_date: str | None, position: int) -> int:
++    cur = conn.execute(
++        "INSERT INTO cards (column_id, title, description, priority, due_date, position) "
++        "VALUES (?, ?, ?, ?, ?, ?)",
++        (column_id, title, description, priority, due_date, position),
++    )
++    return cur.lastrowid
++
++
++def update_fields(conn: sqlite3.Connection, card_id: int, fields: dict) -> None:
++    sets = ", ".join(f"{k} = ?" for k in fields)
++    conn.execute(f"UPDATE cards SET {sets} WHERE id = ?", (*fields.values(), card_id))
++
++
++def delete_card(conn: sqlite3.Connection, card_id: int) -> None:
++    conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
++
++
++def set_location(conn: sqlite3.Connection, card_id: int, column_id: int, position: int) -> None:
++    conn.execute(
++        "UPDATE cards SET column_id = ?, position = ? WHERE id = ?",
++        (column_id, position, card_id),
++    )
+diff --git a/backend/app/services/activity.py b/backend/app/services/activity.py
+index a8b1ad9..614323b 100755
+--- a/backend/app/services/activity.py
++++ b/backend/app/services/activity.py
+@@ -4,20 +4,16 @@ from __future__ import annotations
+ 
+ import sqlite3
+ 
++from ..repositories import activity as activity_repo
++
+ 
+ class ActivityLog:
+     def __init__(self, conn: sqlite3.Connection):
+         self.conn = conn
+ 
+     def record(self, action: str, entity_type: str, entity_id: int) -> None:
+-        self.conn.execute(
+-            "INSERT INTO activity (action, entity_type, entity_id) VALUES (?, ?, ?)",
+-            (action, entity_type, entity_id),
+-        )
++        activity_repo.insert_event(self.conn, action, entity_type, entity_id)
+ 
+     def recent(self, limit: int = 20) -> list[dict]:
+         """The most recent activity entries."""
+-        rows = self.conn.execute(
+-            "SELECT * FROM activity ORDER BY id LIMIT ?", (limit,)
+-        ).fetchall()
+-        return [dict(r) for r in rows]
++        return activity_repo.fetch_events(self.conn, limit)
+diff --git a/backend/app/services/boards.py b/backend/app/services/boards.py
+index 365c903..130329b 100755
+--- a/backend/app/services/boards.py
++++ b/backend/app/services/boards.py
+@@ -7,68 +7,54 @@ import sqlite3
+ from fastapi import HTTPException
+ 
+ from ..models import BoardIn, ColumnIn
++from ..repositories import boards as boards_repo
+ from ..utils.text import slugify
+ from .activity import ActivityLog
+ from .cards import list_cards
+ 
+ 
+ def list_boards(conn: sqlite3.Connection) -> list[dict]:
+-    rows = conn.execute("SELECT id, name, slug FROM boards ORDER BY id").fetchall()
+-    return [dict(r) for r in rows]
++    return boards_repo.fetch_boards(conn)
+ 
+ 
+ def get_board(conn: sqlite3.Connection, board_id: int) -> dict:
+-    row = conn.execute("SELECT * FROM boards WHERE id = ?", (board_id,)).fetchone()
++    row = boards_repo.fetch_board(conn, board_id)
+     if row is None:
+         raise HTTPException(status_code=404, detail="board not found")
+     board = dict(row)
+-    cols = conn.execute(
+-        "SELECT * FROM columns WHERE board_id = ? ORDER BY position, id", (board_id,)
+-    ).fetchall()
++    cols = boards_repo.fetch_columns(conn, board_id)
+     board["columns"] = [{**dict(c), "cards": list_cards(conn, c["id"])} for c in cols]
+     return board
+ 
+ 
+ def create_board(conn: sqlite3.Connection, data: BoardIn) -> dict:
+     slug = slugify(data.name)
+-    if conn.execute("SELECT 1 FROM boards WHERE slug = ?", (slug,)).fetchone():
++    if boards_repo.slug_exists(conn, slug):
+         raise HTTPException(status_code=409, detail="a board with this name already exists")
+-    cur = conn.execute("INSERT INTO boards (name, slug) VALUES (?, ?)", (data.name, slug))
+-    ActivityLog(conn).record("board_created", "board", cur.lastrowid)
+-    return {**dict(conn.execute("SELECT * FROM boards WHERE id = ?", (cur.lastrowid,)).fetchone()),
+-            "columns": []}
++    board_id = boards_repo.insert_board(conn, data.name, slug)
++    ActivityLog(conn).record("board_created", "board", board_id)
++    return {**dict(boards_repo.fetch_board(conn, board_id)), "columns": []}
+ 
+ 
+ def create_column(conn: sqlite3.Connection, board_id: int, data: ColumnIn) -> dict:
+     get_board(conn, board_id)
+-    pos = conn.execute(
+-        "SELECT COALESCE(MAX(position) + 1, 0) FROM columns WHERE board_id = ?", (board_id,)
+-    ).fetchone()[0]
+-    cur = conn.execute(
+-        "INSERT INTO columns (board_id, name, position, wip_limit) VALUES (?, ?, ?, ?)",
+-        (board_id, data.name, pos, data.wip_limit),
+-    )
+-    ActivityLog(conn).record("column_created", "column", cur.lastrowid)
+-    row = conn.execute("SELECT * FROM columns WHERE id = ?", (cur.lastrowid,)).fetchone()
+-    return {**dict(row), "cards": []}
++    pos = boards_repo.next_column_position(conn, board_id)
++    column_id = boards_repo.insert_column(conn, board_id, data.name, pos, data.wip_limit)
++    ActivityLog(conn).record("column_created", "column", column_id)
++    return {**dict(boards_repo.fetch_column(conn, column_id)), "cards": []}
+ 
+ 
+ def update_column(conn: sqlite3.Connection, column_id: int, data: ColumnIn) -> dict:
+-    row = conn.execute("SELECT * FROM columns WHERE id = ?", (column_id,)).fetchone()
+-    if row is None:
++    if boards_repo.fetch_column(conn, column_id) is None:
+         raise HTTPException(status_code=404, detail="column not found")
+-    conn.execute(
+-        "UPDATE columns SET name = ?, wip_limit = ? WHERE id = ?",
+-        (data.name, data.wip_limit, column_id),
+-    )
++    boards_repo.update_column(conn, column_id, data.name, data.wip_limit)
+     ActivityLog(conn).record("column_updated", "column", column_id)
+-    updated = conn.execute("SELECT * FROM columns WHERE id = ?", (column_id,)).fetchone()
++    updated = boards_repo.fetch_column(conn, column_id)
+     return {**dict(updated), "cards": list_cards(conn, column_id)}
+ 
+ 
+ def delete_column(conn: sqlite3.Connection, column_id: int) -> None:
+-    row = conn.execute("SELECT * FROM columns WHERE id = ?", (column_id,)).fetchone()
+-    if row is None:
++    if boards_repo.fetch_column(conn, column_id) is None:
+         raise HTTPException(status_code=404, detail="column not found")
+-    conn.execute("DELETE FROM columns WHERE id = ?", (column_id,))
++    boards_repo.delete_column(conn, column_id)
+     ActivityLog(conn).record("column_deleted", "column", column_id)
+diff --git a/backend/app/services/cards.py b/backend/app/services/cards.py
+index f025081..5b82bab 100755
+--- a/backend/app/services/cards.py
++++ b/backend/app/services/cards.py
+@@ -7,6 +7,8 @@ import sqlite3
+ from fastapi import HTTPException
+ 
+ from ..models import CardIn, CardUpdate
++from ..repositories import boards as boards_repo
++from ..repositories import cards as cards_repo
+ from .activity import ActivityLog
+ 
+ 
+@@ -15,17 +17,14 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
+ 
+ 
+ def get_card(conn: sqlite3.Connection, card_id: int) -> dict:
+-    row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
++    row = cards_repo.fetch_card(conn, card_id)
+     if row is None:
+         raise HTTPException(status_code=404, detail="card not found")
+     return _row_to_dict(row)
+ 
+ 
+ def list_cards(conn: sqlite3.Connection, column_id: int, sort: str | None = None) -> list[dict]:
+-    rows = conn.execute(
+-        "SELECT * FROM cards WHERE column_id = ? ORDER BY position, id", (column_id,)
+-    ).fetchall()
+-    cards = [_row_to_dict(r) for r in rows]
++    cards = [_row_to_dict(r) for r in cards_repo.fetch_cards(conn, column_id)]
+     if sort == "priority":
+         cards = sorted_by_priority(cards)
+     return cards
+@@ -37,49 +36,36 @@ def sorted_by_priority(cards: list[dict]) -> list[dict]:
+ 
+ 
+ def create_card(conn: sqlite3.Connection, column_id: int, data: CardIn) -> dict:
+-    col = conn.execute("SELECT id FROM columns WHERE id = ?", (column_id,)).fetchone()
+-    if col is None:
++    if boards_repo.fetch_column(conn, column_id) is None:
+         raise HTTPException(status_code=404, detail="column not found")
+-    pos = conn.execute(
+-        "SELECT COALESCE(MAX(position) + 1, 0) FROM cards WHERE column_id = ?", (column_id,)
+-    ).fetchone()[0]
+-    cur = conn.execute(
+-        "INSERT INTO cards (column_id, title, description, priority, due_date, position) "
+-        "VALUES (?, ?, ?, ?, ?, ?)",
+-        (column_id, data.title, data.description, data.priority, data.due_date, pos),
+-    )
+-    ActivityLog(conn).record("card_created", "card", cur.lastrowid)
+-    return get_card(conn, cur.lastrowid)
++    pos = cards_repo.next_position(conn, column_id)
++    card_id = cards_repo.insert_card(conn, column_id, data.title, data.description,
++                                     data.priority, data.due_date, pos)
++    ActivityLog(conn).record("card_created", "card", card_id)
++    return get_card(conn, card_id)
+ 
+ 
+ def update_card(conn: sqlite3.Connection, card_id: int, data: CardUpdate) -> dict:
+     card = get_card(conn, card_id)
+     fields = {k: v for k, v in data.model_dump().items() if v is not None}
+     if fields:
+-        sets = ", ".join(f"{k} = ?" for k in fields)
+-        conn.execute(f"UPDATE cards SET {sets} WHERE id = ?", (*fields.values(), card_id))
++        cards_repo.update_fields(conn, card_id, fields)
+         ActivityLog(conn).record("card_updated", "card", card_id)
+     return get_card(conn, card["id"])
+ 
+ 
+ def delete_card(conn: sqlite3.Connection, card_id: int) -> None:
+     get_card(conn, card_id)
+-    conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
++    cards_repo.delete_card(conn, card_id)
+     ActivityLog(conn).record("card_deleted", "card", card_id)
+ 
+ 
+ def move_card(conn: sqlite3.Connection, card_id: int, column_id: int, position: int | None = None) -> dict:
+     get_card(conn, card_id)
+-    col = conn.execute("SELECT id FROM columns WHERE id = ?", (column_id,)).fetchone()
+-    if col is None:
++    if boards_repo.fetch_column(conn, column_id) is None:
+         raise HTTPException(status_code=404, detail="column not found")
+     if position is None:
+-        position = conn.execute(
+-            "SELECT COALESCE(MAX(position) + 1, 0) FROM cards WHERE column_id = ?", (column_id,)
+-        ).fetchone()[0]
+-    conn.execute(
+-        "UPDATE cards SET column_id = ?, position = ? WHERE id = ?",
+-        (column_id, position, card_id),
+-    )
++        position = cards_repo.next_position(conn, column_id)
++    cards_repo.set_location(conn, card_id, column_id, position)
+     ActivityLog(conn).record("card_moved", "card", card_id)
+     return get_card(conn, card_id)

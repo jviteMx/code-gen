@@ -131,6 +131,24 @@ class CoderSession:
             except KeyboardInterrupt:
                 self.ui.warn("\n[cancelled] back to the prompt.")
 
+    def run_oneshot(self, prompt: str) -> None:
+        """Handle a single task headlessly and return (no REPL)."""
+        try:
+            # --auto: let a model pick an orchestration pattern first. The panel
+            # path ends in approve mode with a plan; investigation just leaves
+            # findings in context for the normal dispatch below.
+            if self._maybe_suggest(prompt) and self.mode == "approve":
+                if self.current_plan:
+                    self._handle_approval("yes")
+                    return
+                self.mode = "plan" if self.plan_mode else "direct"
+            if self.mode == "plan":
+                self._handle_plan(prompt)
+            else:
+                self._handle_direct(prompt)
+        except KeyboardInterrupt:
+            self.ui.warn("\n[cancelled]")
+
     # ── command registry ─────────────────────────────────────────────────
 
     def _build_commands(self) -> dict:
@@ -151,6 +169,7 @@ class CoderSession:
             "/investigate": self._cmd_investigate, "/explore": self._cmd_investigate,
             "/build": self._cmd_build, "/tdd": self._cmd_build,
             "/supervise": self._cmd_supervise, "/auto": self._cmd_auto,
+            "/benchmark": self._cmd_benchmark, "/bench": self._cmd_benchmark,
         }
 
     def _dispatch_command(self, text: str) -> bool:
@@ -257,8 +276,10 @@ class CoderSession:
     def _cmd_load(self, arg: str) -> None:
         """Make model N the main model (`/model N`, alias `/load N`).
 
-        Already-loaded local models and cloud models are selected in place with
-        no reload; only an unloaded LMStudio model gets loaded first.
+        Already-loaded local models and cloud models are selected in place;
+        an unloaded LMStudio model gets loaded first. After a switch away from
+        a loaded local model you're asked whether to unload it (VRAM is finite);
+        `/model N` on the current main model toggles it: confirms and unloads.
         """
         models = self._all_models()
         if not models:
@@ -267,36 +288,114 @@ class CoderSession:
         try:
             idx = int(arg.split()[0]) - 1
         except (ValueError, IndexError):
-            self.ui.info("Usage: /model <number> (see /models).")
+            self.ui.info("Usage: /model <number> (see /models). Repeat on the current main to unload it.")
             return
         if not (0 <= idx < len(models)):
             self.ui.warn("Invalid model number.")
             return
         target = models[idx]
 
+        from code_agent.lmstudio import LMStudioManager
+        mgr = LMStudioManager(self.lmstudio_url)
+        prev_key = self.client.model if self.client.name == "lmstudio" else None
+
+        # Toggle: /model N on the model that is already the main → unload it.
+        if (target.get("provider") != "claude" and target.get("loaded")
+                and prev_key == target["key"]):
+            if not self._confirm(f"{target['display_name']} is the current main model. Unload it?",
+                                 default=True):
+                return
+            result = mgr.unload_model(target["key"])
+            if not result.get("success"):
+                self.ui.error(f"Unload failed: {result.get('error', 'unknown error')} "
+                              "(the model is still loaded)")
+                return
+            self.ui.success(f"Unloaded {target['display_name']}.")
+            self._fallback_main(exclude_key=target["key"])
+            return
+
         # Cloud model or an already-loaded local model: just select it.
         if target.get("provider") == "claude" or target.get("loaded"):
             self._select_main(target)
             where = "cloud" if target.get("provider") == "claude" else "already loaded"
             self.ui.success(f"Main model → {target['display_name']} ({where}).")
+            # Both models stay resident on purpose (orchestration can use both),
+            # but offer the unload since VRAM contention is the common footgun.
+            self._offer_unload_previous(mgr, models, prev_key, target, default=False)
             return
 
-        # Unloaded LMStudio model: load it, then select. Leave other loaded
-        # models in place (multi-model orchestration relies on them).
-        from code_agent.lmstudio import LMStudioManager
-        mgr = LMStudioManager(self.lmstudio_url)
-        self.ui.info(f"Loading {target['display_name']}… "
+        # Unloaded LMStudio model: load it, then select. LMStudio's own default
+        # context is a useless 4096, so ask for more (capped by the model's max).
+        from code_agent.lmstudio import DEFAULT_LOAD_CONTEXT
+        want_ctx = min(DEFAULT_LOAD_CONTEXT, target.get("max_context_length") or DEFAULT_LOAD_CONTEXT)
+        self.ui.info(f"Loading {target['display_name']} (requesting {want_ctx:,} ctx)… "
                      "[grey58](big models on CPU can take minutes; Ctrl+C to abort)[/grey58]")
         try:
-            result = mgr.load_model(target["key"])
+            result = mgr.load_model(target["key"], context_length=want_ctx)
         except KeyboardInterrupt:
             self.ui.warn("Load aborted.")
             return
         if result.get("success"):
+            effective = result.get("context_length")
+            if effective:
+                target = {**target, "max_context_length": effective}
             self._select_main(target)
-            self.ui.success(f"Loaded and selected. Context: {target['max_context_length']:,} tokens.")
+            if effective:
+                self.ui.success(f"Loaded and selected. Context: {effective:,} tokens.")
+                if effective < want_ctx:
+                    self.ui.warn(f"Server loaded only {effective:,} of the requested "
+                                 f"{want_ctx:,} — raise the model's context in "
+                                 "LM Studio's per-model settings for agentic work.")
+            else:
+                self.ui.success("Loaded and selected.")
+                self.ui.warn(f"Couldn't confirm the effective context (requested {want_ctx:,}). "
+                             "LMStudio's API default is 4096 — check the model's context in "
+                             "LM Studio's settings; agentic work needs 16k+.")
+            self._offer_unload_previous(mgr, models, prev_key, target, default=True)
         else:
             self.ui.error(f"Failed: {result.get('error', 'unknown error')}")
+
+    def _confirm(self, prompt: str, default: bool) -> bool:
+        suffix = "[Y/n]" if default else "[y/N]"
+        try:
+            ans = input(f"  {prompt} {suffix} ").strip().lower()
+        except (EOFError, KeyboardInterrupt, OSError):
+            return False  # non-interactive stdin: never unload unattended
+        if not ans:
+            return default
+        return ans in ("y", "yes")
+
+    def _offer_unload_previous(self, mgr, models: list[dict], prev_key: str | None,
+                               target: dict, default: bool) -> None:
+        """After switching main away from a loaded local model, offer to unload it."""
+        if not prev_key or prev_key in ("default", target.get("key")):
+            return
+        prev = next((m for m in models
+                     if m.get("key") == prev_key and m.get("loaded")
+                     and m.get("provider") != "claude"), None)
+        if prev is None:
+            return
+        if self._confirm(f"Unload the previous model {prev['display_name']} to free VRAM? "
+                         "(keep it for multi-model orchestration)", default=default):
+            result = mgr.unload_model(prev_key)
+            if result.get("success"):
+                self.ui.success(f"Unloaded {prev['display_name']}.")
+            else:
+                self.ui.error(f"Unload failed: {result.get('error', 'unknown error')} "
+                              "(the model is still loaded)")
+
+    def _fallback_main(self, exclude_key: str) -> None:
+        """After unloading the main model, point main at another loaded chat model."""
+        candidates = [m for m in self._all_models()
+                      if m.get("loaded") and m.get("provider") != "claude"
+                      and m.get("key") != exclude_key and not mp.profile(m).is_embedding]
+        if candidates:
+            self._select_main(candidates[0])
+            self.ui.info(f"Main model → {candidates[0]['display_name']}.")
+        elif self.registry is not None and self.registry.has_claude():
+            self.ui.warn("No local model loaded. Claude is available — select it with /models, /model N.")
+        else:
+            self.ui.warn("No model loaded now. Use /models then /model N to load one.")
 
     def _select_main(self, model: dict) -> None:
         """Point the main model at `model`, routing to its provider's client.
@@ -324,7 +423,8 @@ class CoderSession:
         c = self.ui.console
         crit, crit_auto = self._eff_role(self.critic_model, {self.client.model})
         judge, judge_auto = self._eff_role(self.judge_model, {self.client.model, crit})
-        tag = lambda auto: " [grey50](auto)[/grey50]" if auto else ""
+        def tag(auto: bool) -> str:
+            return " [grey50](auto)[/grey50]" if auto else ""
         c.print(f"  [grey58]main[/grey58]   {self.client.model}")
         c.print(f"  [grey58]critic[/grey58] {crit}{tag(crit_auto)}")
         c.print(f"  [grey58]judge[/grey58]  {judge}{tag(judge_auto)}")
@@ -638,6 +738,69 @@ class CoderSession:
     def _cmd_auto(self, arg: str) -> None:
         self.auto_orchestrate = arg.strip().lower() not in ("off", "false", "0", "no")
         self.ui.info(f"Auto-suggest {'on' if self.auto_orchestrate else 'off'}.")
+
+    def _cmd_benchmark(self, arg: str) -> None:
+        """Run the task-suite benchmark against the current main model.
+
+        Spawns `python -m benchmark.harness.run` from the code-agent repo (the
+        benchmark ships in the repo, not the wheel) and streams its output.
+        Arguments pass through: /benchmark --levels 1-3 --trials 3, /benchmark
+        oracle (short for --oracle), /benchmark --tasks L4-01.
+        """
+        import os
+        import shlex
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[3]
+        if not (repo_root / "benchmark" / "harness" / "run.py").exists():
+            self.ui.error("benchmark/ not found next to the package — it ships in the "
+                          "code-agent repo. Clone the repo and `pip install -e \".[bench]\"`.")
+            return
+        try:
+            args = shlex.split(arg)
+        except ValueError as e:
+            self.ui.error(f"Bad arguments: {e}")
+            return
+        if args and args[0] == "oracle":
+            args[0] = "--oracle"
+        oracle = "--oracle" in args
+        if not oracle and self.client.name != "lmstudio":
+            self.ui.warn("The benchmark drives the LM Studio backend, but the current "
+                         "main model is Claude. Pick a local model first (/models, /model N).")
+            return
+
+        cmd = [sys.executable, "-m", "benchmark.harness.run", *args]
+        if "--lmstudio-url" not in args:
+            cmd += ["--lmstudio-url", self.lmstudio_url]
+        env = {**os.environ, "AI_PROVIDER": "lmstudio"}
+        if not oracle and self.client.model not in ("", "default", None):
+            env["LMSTUDIO_MODEL"] = self.client.model
+
+        self.ui.rule("benchmark")
+        target = "oracle (reference patches)" if oracle else self.client.model
+        self.ui.info(f"  model: {target}")
+        self.ui.info(f"  results: {repo_root / 'benchmark' / 'results'}")
+        proc = subprocess.Popen(cmd, cwd=repo_root, env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        try:
+            for line in proc.stdout:
+                # markup=False: benchmark output contains literal brackets ("[1/18]")
+                self.ui.console.print("  " + line.rstrip(), style="grey58", markup=False)
+            proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            self.ui.warn("\n[benchmark cancelled]")
+            return
+        if proc.returncode == 0:
+            self.ui.success("Benchmark finished.")
+        else:
+            self.ui.error(f"Benchmark exited with code {proc.returncode}.")
 
     # ── model discovery & role assignment ─────────────────────────────────
 
@@ -990,6 +1153,7 @@ class CoderSession:
         repeat_count = 0
         rounds_since_progress = 0
         last_meta_check = 0
+        empty_nudges = 0
 
         while True:
             if self._over_context(messages):
@@ -1023,6 +1187,18 @@ class CoderSession:
 
             if not turn.tool_calls:
                 self.client.append_assistant(messages, turn)
+                # Weak local models sometimes emit their "tool call" as XML text
+                # inside the reasoning channel; the API then hands us an empty
+                # message with no tool calls. Don't accept that as completion.
+                if not (text and text.strip()) and empty_nudges < 2:
+                    empty_nudges += 1
+                    self.ui.warn("[empty response] nudging the model to continue…")
+                    messages.append({"role": "user", "content": (
+                        "Your last message was empty. If you intended to call a tool, "
+                        "emit it as a structured tool call — never write the call as "
+                        "text or inside your reasoning. Continue working on the task; "
+                        "if it is fully complete, reply with a brief summary instead.")})
+                    continue
                 break
 
             # Guard against repeat loops by comparing the first tool call.

@@ -1,0 +1,9 @@
+id: L1-02
+level: 1
+title: Add word-safe truncate helper
+timeout_s: 600
+request_timeout_s: 240
+frontend: false
+graders: [pytest]
+expected_files:
+  - backend/app/utils/text.py

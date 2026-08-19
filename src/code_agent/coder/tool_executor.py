@@ -187,13 +187,15 @@ class CodingToolExecutor:
         self, rg: str, pattern: str, dirpath: Path, file_pattern: str | None
     ) -> dict | None:
         max_matches = 200
-        cmd = [rg, "--line-number", "--no-heading", "--color", "never",
-               "--max-count", "50", "-i", "-e", pattern]
+        cmd = [rg, "--json", "--hidden", "--no-ignore", "--max-count", "50",
+               "-i", "-e", pattern]
         if file_pattern:
             cmd += ["--glob", file_pattern]
-        cmd.append(str(dirpath))
+        for skipped in sorted(_SKIP_DIRS):
+            cmd += ["--glob", f"!**/{skipped}/**"]
+        cmd.append(".")
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            proc = subprocess.run(cmd, cwd=dirpath, capture_output=True, text=True, timeout=30)
         except Exception:
             return None
         # rg exits 1 on no matches, which is a valid empty result.
@@ -201,16 +203,18 @@ class CodingToolExecutor:
             return None
         matches: list[dict] = []
         for line in proc.stdout.splitlines():
-            parts = line.split(":", 2)
-            if len(parts) < 3:
-                continue
-            fpath, lineno, txt = parts
             try:
-                rel = self._rel(Path(fpath))
-            except Exception:
-                rel = fpath
-            matches.append({"file": rel, "line": int(lineno) if lineno.isdigit() else 0,
-                            "text": txt.strip()[:200]})
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") != "match":
+                continue
+            data = event.get("data", {})
+            fpath = data.get("path", {}).get("text", "")
+            text = data.get("lines", {}).get("text", "")
+            matches.append({"file": self._rel(Path(fpath)),
+                            "line": int(data.get("line_number") or 0),
+                            "text": text.strip()[:200]})
             if len(matches) >= max_matches:
                 return {"count": len(matches), "truncated": True, "matches": matches, "engine": "ripgrep"}
         return {"count": len(matches), "truncated": False, "matches": matches, "engine": "ripgrep"}

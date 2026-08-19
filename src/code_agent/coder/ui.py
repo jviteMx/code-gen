@@ -25,7 +25,7 @@ SLASH_COMMANDS = {
     "/tokens": "show token usage breakdown",
     "/memory": "show session memory",
     "/models": "list available models (local + Claude) by number",
-    "/model": "set the main model by number (loaded/cloud selected without reload; alias /load)",
+    "/model": "set the main model by number; offers to unload the previous one; repeat on the current main to unload it (alias /load)",
     "/continue": "continue where the model left off",
     # multi-agent orchestration
     "/agents": "show agents, models, and orchestration status",
@@ -38,6 +38,7 @@ SLASH_COMMANDS = {
     "/build": "implement → review → fix loop with a supervising model (/tdd)",
     "/supervise": "on|off: auto-review every plan and diff with a 2nd model",
     "/auto": "on|off: let the harness suggest an approach per task",
+    "/benchmark": "benchmark the current model on the task suite (args pass through, e.g. /benchmark --levels 1-3 --trials 3; /bench)",
     "/clear": "clear conversation + memory",
     "/help": "show commands",
     "/quit": "end the session",
@@ -204,8 +205,10 @@ class ReplUI:
         path = display.get("path", "")
         label = {"create": "created", "overwrite": "rewrote", "edit": "edited"}.get(kind, "changed")
         diff_text = display.get("diff") or ""
-        adds = sum(1 for l in diff_text.splitlines() if l.startswith("+") and not l.startswith("+++"))
-        dels = sum(1 for l in diff_text.splitlines() if l.startswith("-") and not l.startswith("---"))
+        adds = sum(1 for line in diff_text.splitlines()
+                   if line.startswith("+") and not line.startswith("+++"))
+        dels = sum(1 for line in diff_text.splitlines()
+                   if line.startswith("-") and not line.startswith("---"))
         self.console.print(f"    [green]{label}[/green] [bold]{_rich_escape(path)}[/bold] "
                            f"[green]+{adds}[/green] [red]-{dels}[/red]")
         shown = 0

@@ -1,0 +1,10 @@
+id: L2-01
+level: 2
+title: Computed is_overdue field on cards
+timeout_s: 900
+request_timeout_s: 240
+frontend: false
+graders: [pytest]
+expected_files:
+  - backend/app/models.py
+  - backend/app/services/cards.py

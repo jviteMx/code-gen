@@ -1,0 +1,26 @@
+diff --git a/backend/app/routers/columns.py b/backend/app/routers/columns.py
+index b02dc1e..38287d1 100755
+--- a/backend/app/routers/columns.py
++++ b/backend/app/routers/columns.py
+@@ -4,7 +4,7 @@ from __future__ import annotations
+ 
+ import sqlite3
+ 
+-from fastapi import APIRouter, Depends
++from fastapi import APIRouter, Depends, Query, Response
+ 
+ from ..db import get_db
+ from ..models import CardOut, ColumnIn, ColumnOut
+@@ -30,6 +30,10 @@ def delete_column(column_id: int, conn: sqlite3.Connection = Depends(get_db)):
+ 
+ 
+ @router.get("/columns/{column_id}/cards", response_model=list[CardOut])
+-def list_cards(column_id: int, sort: str | None = None,
++def list_cards(column_id: int, response: Response, sort: str | None = None,
++               limit: int = Query(50, ge=1, le=200),
++               offset: int = Query(0, ge=0),
+                conn: sqlite3.Connection = Depends(get_db)):
+-    return card_service.list_cards(conn, column_id, sort=sort)
++    cards = card_service.list_cards(conn, column_id, sort=sort)
++    response.headers["X-Total-Count"] = str(len(cards))
++    return cards[offset : offset + limit]

@@ -1,0 +1,47 @@
+diff --git a/frontend/src/components/Card.jsx b/frontend/src/components/Card.jsx
+index e9cfbb6..3ea2778 100755
+--- a/frontend/src/components/Card.jsx
++++ b/frontend/src/components/Card.jsx
+@@ -1,9 +1,20 @@
++function isOverdue(card) {
++  if (!card.due_date) return false
++  const [y, m, d] = card.due_date.split('-').map(Number)
++  const due = new Date(y, m - 1, d)
++  const now = new Date()
++  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
++  return due < today
++}
++
+ export default function Card({ card }) {
++  const overdue = isOverdue(card)
+   return (
+-    <article className="card" data-card-id={card.id}>
++    <article className={`card${overdue ? ' card--overdue' : ''}`} data-card-id={card.id}>
+       <div className="card-title">{card.title}</div>
+       <div className="card-meta">
+         <span className={`priority-badge priority-${card.priority}`}>{card.priority}</span>
++        {overdue && <span className="overdue-badge">OVERDUE</span>}
+         {card.due_date && <span className="due-date">{card.due_date}</span>}
+       </div>
+     </article>
+diff --git a/frontend/src/styles/board.css b/frontend/src/styles/board.css
+index 10b37c8..0ff1105 100755
+--- a/frontend/src/styles/board.css
++++ b/frontend/src/styles/board.css
+@@ -81,6 +81,16 @@
+   color: #64748b;
+ }
+ 
++.card--overdue {
++  border-left: 3px solid #dc2626;
++}
++
++.overdue-badge {
++  font-size: 11px;
++  font-weight: 700;
++  color: #dc2626;
++}
++
+ .new-card-form {
+   display: flex;
+   gap: 6px;

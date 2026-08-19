@@ -1,0 +1,12 @@
+id: L4-02
+level: 4
+title: Column archive workflow
+timeout_s: 1200
+request_timeout_s: 240
+frontend: false
+graders: [pytest]
+expected_files:
+  - backend/app/schema.sql
+  - backend/app/models.py
+  - backend/app/services/boards.py
+  - backend/app/routers/columns.py

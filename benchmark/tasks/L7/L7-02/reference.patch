@@ -1,0 +1,268 @@
+diff --git a/backend/app/routers/cards.py b/backend/app/routers/cards.py
+index 500119c..36d3446 100755
+--- a/backend/app/routers/cards.py
++++ b/backend/app/routers/cards.py
+@@ -18,6 +18,11 @@ def create_card(column_id: int, data: CardIn, conn: sqlite3.Connection = Depends
+     return card_service.create_card(conn, column_id, data)
+ 
+ 
++@router.get("/cards/deleted", response_model=list[CardOut])
++def deleted_cards(limit: int = 5, conn: sqlite3.Connection = Depends(get_db)):
++    return card_service.list_deleted(conn, limit)
++
++
+ @router.get("/cards/{card_id}", response_model=CardOut)
+ def get_card(card_id: int, conn: sqlite3.Connection = Depends(get_db)):
+     return card_service.get_card(conn, card_id)
+@@ -33,6 +38,11 @@ def delete_card(card_id: int, conn: sqlite3.Connection = Depends(get_db)):
+     card_service.delete_card(conn, card_id)
+ 
+ 
++@router.post("/cards/{card_id}/restore", response_model=CardOut)
++def restore_card(card_id: int, conn: sqlite3.Connection = Depends(get_db)):
++    return card_service.restore_card(conn, card_id)
++
++
+ @router.post("/cards/{card_id}/move", response_model=CardOut)
+ def move_card(card_id: int, column_id: int, position: int | None = None,
+               conn: sqlite3.Connection = Depends(get_db)):
+diff --git a/backend/app/schema.sql b/backend/app/schema.sql
+index 3170626..62aaeca 100755
+--- a/backend/app/schema.sql
++++ b/backend/app/schema.sql
+@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS cards (
+     description TEXT NOT NULL DEFAULT '',
+     priority TEXT NOT NULL DEFAULT 'medium',
+     due_date TEXT,
+-    position INTEGER NOT NULL DEFAULT 0
++    position INTEGER NOT NULL DEFAULT 0,
++    deleted INTEGER NOT NULL DEFAULT 0
+ );
+ 
+ CREATE TABLE IF NOT EXISTS activity (
+diff --git a/backend/app/services/cards.py b/backend/app/services/cards.py
+index f025081..39510e8 100755
+--- a/backend/app/services/cards.py
++++ b/backend/app/services/cards.py
+@@ -15,7 +15,9 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
+ 
+ 
+ def get_card(conn: sqlite3.Connection, card_id: int) -> dict:
+-    row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
++    row = conn.execute(
++        "SELECT * FROM cards WHERE id = ? AND deleted = 0", (card_id,)
++    ).fetchone()
+     if row is None:
+         raise HTTPException(status_code=404, detail="card not found")
+     return _row_to_dict(row)
+@@ -23,7 +25,8 @@ def get_card(conn: sqlite3.Connection, card_id: int) -> dict:
+ 
+ def list_cards(conn: sqlite3.Connection, column_id: int, sort: str | None = None) -> list[dict]:
+     rows = conn.execute(
+-        "SELECT * FROM cards WHERE column_id = ? ORDER BY position, id", (column_id,)
++        "SELECT * FROM cards WHERE column_id = ? AND deleted = 0 ORDER BY position, id",
++        (column_id,)
+     ).fetchall()
+     cards = [_row_to_dict(r) for r in rows]
+     if sort == "priority":
+@@ -64,10 +67,27 @@ def update_card(conn: sqlite3.Connection, card_id: int, data: CardUpdate) -> dic
+ 
+ def delete_card(conn: sqlite3.Connection, card_id: int) -> None:
+     get_card(conn, card_id)
+-    conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
++    conn.execute("UPDATE cards SET deleted = 1 WHERE id = ?", (card_id,))
+     ActivityLog(conn).record("card_deleted", "card", card_id)
+ 
+ 
++def restore_card(conn: sqlite3.Connection, card_id: int) -> dict:
++    row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
++    if row is None:
++        raise HTTPException(status_code=404, detail="card not found")
++    if row["deleted"]:
++        conn.execute("UPDATE cards SET deleted = 0 WHERE id = ?", (card_id,))
++        ActivityLog(conn).record("card_restored", "card", card_id)
++    return get_card(conn, card_id)
++
++
++def list_deleted(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
++    rows = conn.execute(
++        "SELECT * FROM cards WHERE deleted = 1 ORDER BY id DESC LIMIT ?", (limit,)
++    ).fetchall()
++    return [dict(r) for r in rows]
++
++
+ def move_card(conn: sqlite3.Connection, card_id: int, column_id: int, position: int | None = None) -> dict:
+     get_card(conn, card_id)
+     col = conn.execute("SELECT id FROM columns WHERE id = ?", (column_id,)).fetchone()
+diff --git a/frontend/src/App.jsx b/frontend/src/App.jsx
+index f039704..6aa095b 100755
+--- a/frontend/src/App.jsx
++++ b/frontend/src/App.jsx
+@@ -1,10 +1,12 @@
+ import { useCallback, useEffect, useState } from 'react'
+-import { getBoard, getBoards } from './api.js'
++import { getBoard, getBoards, getDeletedCards } from './api.js'
+ import Header from './components/Header.jsx'
+ import Board from './components/Board.jsx'
++import RecentlyDeleted from './components/RecentlyDeleted.jsx'
+ 
+ export default function App() {
+   const [board, setBoard] = useState(null)
++  const [deleted, setDeleted] = useState([])
+   const [error, setError] = useState(null)
+ 
+   const refresh = useCallback(async () => {
+@@ -15,6 +17,7 @@ export default function App() {
+         return
+       }
+       setBoard(await getBoard(boards[0].id))
++      setDeleted(await getDeletedCards())
+     } catch (e) {
+       setError(e.message)
+     }
+@@ -31,6 +34,7 @@ export default function App() {
+     <div className="app">
+       <Header boardName={board.name} />
+       <Board board={board} onChange={refresh} />
++      <RecentlyDeleted cards={deleted} onChange={refresh} />
+     </div>
+   )
+ }
+diff --git a/frontend/src/api.js b/frontend/src/api.js
+index e12a875..2722df6 100755
+--- a/frontend/src/api.js
++++ b/frontend/src/api.js
+@@ -36,3 +36,11 @@ export function moveCard(cardId, columnId, position) {
+ export function deleteCard(cardId) {
+   return request(`/api/cards/${cardId}`, { method: 'DELETE' })
+ }
++
++export function getDeletedCards(limit = 5) {
++  return request(`/api/cards/deleted?limit=${limit}`)
++}
++
++export function restoreCard(cardId) {
++  return request(`/api/cards/${cardId}/restore`, { method: 'POST' })
++}
+diff --git a/frontend/src/components/Card.jsx b/frontend/src/components/Card.jsx
+index e9cfbb6..f47d0fa 100755
+--- a/frontend/src/components/Card.jsx
++++ b/frontend/src/components/Card.jsx
+@@ -1,7 +1,19 @@
+-export default function Card({ card }) {
++import { deleteCard } from '../api.js'
++
++export default function Card({ card, onChange }) {
++  async function remove() {
++    await deleteCard(card.id)
++    onChange()
++  }
++
+   return (
+     <article className="card" data-card-id={card.id}>
+-      <div className="card-title">{card.title}</div>
++      <div className="card-title">
++        {card.title}
++        <button type="button" className="card-delete" onClick={remove} title="Delete card">
++          ×
++        </button>
++      </div>
+       <div className="card-meta">
+         <span className={`priority-badge priority-${card.priority}`}>{card.priority}</span>
+         {card.due_date && <span className="due-date">{card.due_date}</span>}
+diff --git a/frontend/src/components/RecentlyDeleted.jsx b/frontend/src/components/RecentlyDeleted.jsx
+new file mode 100644
+index 0000000..7783510
+--- /dev/null
++++ b/frontend/src/components/RecentlyDeleted.jsx
+@@ -0,0 +1,24 @@
++import { restoreCard } from '../api.js'
++
++export default function RecentlyDeleted({ cards, onChange }) {
++  async function restore(id) {
++    await restoreCard(id)
++    onChange()
++  }
++
++  return (
++    <aside className="recently-deleted">
++      <h3 className="recently-deleted-title">Recently deleted</h3>
++      <ul className="recently-deleted-list">
++        {cards.map((card) => (
++          <li key={card.id} className="recently-deleted-item">
++            <span className="deleted-card-title">{card.title}</span>
++            <button type="button" className="restore-btn" onClick={() => restore(card.id)}>
++              Restore
++            </button>
++          </li>
++        ))}
++      </ul>
++    </aside>
++  )
++}
+diff --git a/frontend/src/styles/board.css b/frontend/src/styles/board.css
+index 10b37c8..ae45e43 100755
+--- a/frontend/src/styles/board.css
++++ b/frontend/src/styles/board.css
+@@ -115,3 +115,61 @@
+ .new-card-submit:hover {
+   background: #1d4ed8;
+ }
++
++.card-title {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 8px;
++}
++
++.card-delete {
++  border: none;
++  background: none;
++  color: #94a3b8;
++  font-size: 14px;
++  cursor: pointer;
++  padding: 0 2px;
++}
++
++.card-delete:hover {
++  color: #dc2626;
++}
++
++.recently-deleted {
++  margin: 8px 24px 24px;
++  padding: 12px;
++  background: #e2e8f0;
++  border-radius: 8px;
++  max-width: 480px;
++}
++
++.recently-deleted-title {
++  font-size: 13px;
++  color: #64748b;
++  margin-bottom: 8px;
++}
++
++.recently-deleted-list {
++  list-style: none;
++  display: flex;
++  flex-direction: column;
++  gap: 6px;
++}
++
++.recently-deleted-item {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 8px;
++  font-size: 13px;
++}
++
++.restore-btn {
++  border: 1px solid #cbd5e1;
++  background: white;
++  border-radius: 4px;
++  padding: 2px 8px;
++  font-size: 12px;
++  cursor: pointer;
++}
