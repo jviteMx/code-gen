@@ -206,14 +206,20 @@ MODEL_ROUTER_PROMPT = (
 )
 
 APPROACH_CLASSIFIER_PROMPT = (
-    "Classify how a coding assistant should approach the user's request:\n"
-    "- single: one model should just plan/answer directly — the DEFAULT for most tasks, "
-    "including summaries and 'tell me what's wrong' audits.\n"
-    "- investigate: explore the codebase in parallel across several areas first.\n"
-    "- panel: a multi-model plan panel — ONLY for hard design/architecture decisions with real trade-offs.\n"
-    "- review: a critic model should review an existing plan or diff.\n"
-    "Bias strongly toward 'single'. Do NOT choose 'panel' for a summary, review, or audit.\n"
-    'Respond with ONLY JSON: {"approach":"single|investigate|panel|review","reason":"short"}'
+    "Choose the least expensive workflow that is likely to materially improve correctness.\n"
+    "- single: the target and intended change are localized and clear.\n"
+    "- investigate: ownership or failure location is unclear, or the work crosses two or more "
+    "subsystems/layers (for example API + schema + UI), so parallel read-only exploration helps.\n"
+    "- panel: an architecture, migration, compatibility, or public-API decision has multiple "
+    "credible approaches with real trade-offs that should be compared before implementation.\n"
+    "Do not choose panel merely because a task is long. Do not force a cross-layer or poorly "
+    "localized task into single merely because single is cheaper. Review is a runtime action, "
+    "not an initial route.\n"
+    "Set confidence from 0 to 1. Set parallelism to the useful number of independent workers "
+    "(1 for single; normally 2-4 otherwise). Signals must name observable task properties.\n"
+    "Respond with ONLY JSON using this schema: "
+    '{"approach":"single|investigate|panel","confidence":0.0,'
+    '"parallelism":1,"signals":["short signal"],"reason":"short"}'
 )
 
 COMPACT_SYSTEM_PROMPT = (

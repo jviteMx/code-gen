@@ -97,6 +97,20 @@ def test_oneshot_writes_stats_file(tmp_path):
     assert stats["provider"] == "lmstudio"
 
 
+def test_oneshot_stats_include_routing_evidence(tmp_path):
+    from code_agent.coder.loop import _write_oneshot_stats
+    memory = SessionMemory(str(tmp_path))
+    tracker = TokenTracker(8192)
+    session = _session(tmp_path, FakeClient(const=Turn(content="done")),
+                       auto_orchestrate=True)
+    session._routing["events"].append({"phase": "initial", "selected": "single"})
+    _write_oneshot_stats(str(tmp_path), tracker, "lmstudio", "qwen-test", memory,
+                         session=session)
+    stats = json.loads((tmp_path / ".jt" / "oneshot_stats.json").read_text())
+    assert stats["routing"]["policy_version"] == "auto-v2"
+    assert stats["routing"]["events"][0]["selected"] == "single"
+
+
 def test_cli_oneshot_requires_prompt(monkeypatch, tmp_path):
     from code_agent import cli
     monkeypatch.setattr(sys, "argv", ["code-agent", str(tmp_path), "--oneshot"])

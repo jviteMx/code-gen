@@ -155,7 +155,7 @@ def run_coding_session(
         session.startup_preflight()
     if oneshot:
         session.run_oneshot(oneshot_prompt or "")
-        _write_oneshot_stats(workdir, tracker, provider, model_name, memory)
+        _write_oneshot_stats(workdir, tracker, provider, model_name, memory, session=session)
         return
     try:
         session.run()
@@ -163,19 +163,23 @@ def run_coding_session(
         pass
 
 
-def _write_oneshot_stats(workdir: str, tracker, provider: str, model_name: str, memory) -> None:
+def _write_oneshot_stats(workdir: str, tracker, provider: str, model_name: str, memory,
+                         session=None) -> None:
     """Drop machine-readable run stats for headless callers (benchmarks, jt start)."""
     try:
         stats_dir = Path(workdir) / ".jt"
         stats_dir.mkdir(parents=True, exist_ok=True)
-        (stats_dir / "oneshot_stats.json").write_text(json.dumps({
+        stats = {
             "provider": provider,
             "model": model_name,
             "total_requests": tracker.total_requests,
             "used_tokens": tracker.used_tokens,
             "total_output_tokens": tracker.total_output_tokens,
             "errors_encountered": memory.errors_encountered,
-        }, indent=2))
+        }
+        if session is not None:
+            stats["routing"] = session.routing_summary()
+        (stats_dir / "oneshot_stats.json").write_text(json.dumps(stats, indent=2))
     except OSError:
         pass
 

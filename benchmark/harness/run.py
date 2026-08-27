@@ -37,6 +37,23 @@ from .schema_check import run_schemathesis  # noqa: E402
 from .schemas import TaskSpec, TrialResult  # noqa: E402
 
 
+def effective_max_parallel(agent_args: list[str]) -> int:
+    """Return code-agent's effective worker cap (last CLI occurrence wins)."""
+    value = 1  # benchmark agent.py's conservative default
+    for i, arg in enumerate(agent_args):
+        raw = None
+        if arg == "--max-parallel" and i + 1 < len(agent_args):
+            raw = agent_args[i + 1]
+        elif arg.startswith("--max-parallel="):
+            raw = arg.split("=", 1)[1]
+        if raw is not None:
+            try:
+                value = max(1, int(raw))
+            except ValueError:
+                pass
+    return value
+
+
 def discover_tasks(cfg: BenchConfig) -> list[TaskSpec]:
     specs = [TaskSpec.load(p.parent) for p in sorted(TASKS_DIR.glob("L*/*/task.yaml"))]
     if cfg.tasks:
@@ -54,7 +71,13 @@ def discover_tasks(cfg: BenchConfig) -> list[TaskSpec]:
 
 def preflight(cfg: BenchConfig, needs_node: bool, needs_browser: bool) -> dict:
     meta: dict = {"oracle": cfg.oracle, "trials_per_task": cfg.trials, "model": None,
-                  "agent_args": cfg.agent_args, "timeout_scale": cfg.timeout_scale}
+                  "agent_args": cfg.agent_args, "timeout_scale": cfg.timeout_scale,
+                  "routing_policy_version": "auto-v2" if "--auto" in cfg.agent_args else None,
+                  "effective_max_parallel": effective_max_parallel(cfg.agent_args)}
+    if "--auto" in cfg.agent_args and meta["effective_max_parallel"] <= 1:
+        print("WARNING: --auto is enabled but effective --max-parallel is 1. "
+              "The router can select investigate/panel, but those routes cannot execute "
+              "in parallel; add --max-parallel 3 for the intended comparison.")
     if not cfg.oracle:
         if shutil.which(cfg.agent_bin) is None:
             sys.exit(f"'{cfg.agent_bin}' not found in PATH — pip install -e . first")
@@ -156,6 +179,7 @@ def run_trial(task: TaskSpec, trial_no: int, cfg: BenchConfig, run_scratch: Path
             result.timeout = run.timeout
             result.requests = run.stats.get("total_requests")
             result.tokens_used = run.stats.get("used_tokens")
+            result.routing = dict(run.stats.get("routing") or {})
             if run.timeout:
                 result.failure = "wall-timeout"
             elif run.exit_code not in (0, None) and not run.stats:

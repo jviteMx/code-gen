@@ -32,17 +32,41 @@ def render(results: dict) -> str:
     if model:
         ident = " | ".join(str(x) for x in [model.get("params"), model.get("quantization")] if x)
         lines.append(f"- **Model**: `{model.get('key', '?')}`" + (f" ({ident})" if ident else ""))
-        if model.get("max_context_length"):
-            lines.append(f"- **Context**: {model['max_context_length']:,} tokens"
+        context = meta.get("loaded_context_length") or model.get("loaded_context_length") \
+            or model.get("max_context_length")
+        if context:
+            lines.append(f"- **Context**: {context:,} tokens"
                          f" | tool use: {model.get('tool_use', '?')}")
     if meta.get("agent_args"):
         lines.append(f"- **Agent configuration**: `{' '.join(meta['agent_args'])}` "
-                     "(orchestrated run — not comparable with bare-loop runs)")
+                     "(workflow-configured run; compare against bare runs as a separate configuration)")
     if meta.get("loaded_models") and len(meta["loaded_models"]) > 1:
         lines.append(f"- **⚠ Other models were loaded during this run**: "
                      f"{', '.join(meta['loaded_models'])} — VRAM contention may skew wall times")
     lines.append(f"- **Trials per task**: {meta.get('trials_per_task', 1)}")
     lines.append("")
+
+    routing_events = [event for trial in trials
+                      for event in (trial.get("routing", {}).get("events") or [])]
+    if routing_events:
+        initial = {}
+        executed = {}
+        for event in routing_events:
+            if event.get("phase") == "initial":
+                key = event.get("selected", "unknown")
+                initial[key] = initial.get(key, 0) + 1
+            if event.get("executed"):
+                key = event.get("selected", "unknown")
+                executed[key] = executed.get(key, 0) + 1
+        lines.append("## Routing evidence")
+        lines.append("")
+        lines.append(f"- **Policy**: `{meta.get('routing_policy_version') or 'recorded by agent'}`")
+        lines.append("- **Initial decisions**: " + ", ".join(
+            f"{key} {count}" for key, count in sorted(initial.items())))
+        lines.append("- **Executed orchestration routes**: " + (
+            ", ".join(f"{key} {count}" for key, count in sorted(executed.items())) or "none"))
+        lines.append(f"- **Configured worker cap**: {meta.get('effective_max_parallel', 1)}")
+        lines.append("")
 
     lines.append(f"## Overall — score {total['mean_score']:.2f} ± {total['se']:.2f}, "
                  f"pass@1 {total['pass_at_1']:.2f} ({total['tasks']} tasks)")

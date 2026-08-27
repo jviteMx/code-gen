@@ -227,8 +227,13 @@ You can drive it yourself with the slash commands above plus `--supervise`. Or
 you can let the model do it: the main model has a `dispatch_agents` tool to fan
 out read-only investigation on its own, though the harness always asks your
 permission before spawning. With `--auto` (or `/auto on`, which is off by
-default), a model classifies each task and proposes investigate or panel only
-when it actually fits. Summaries and reviews stay single-model.
+default), the versioned `auto-v2` policy records route, confidence, useful
+parallelism, observable signals, reason, and the models used. Localized changes
+stay single-model; unclear ownership and cross-layer work can investigate first;
+architecture or migration decisions with real trade-offs can use a plan panel.
+Low-confidence escalation falls back to the single loop. At runtime, the policy
+can investigate after a localization stall or request a critic review after
+repeated verification failures.
 
 ### Safety model
 
@@ -313,7 +318,7 @@ formats); your session memory stays.
 | `/investigate <a>; <b>; <c>` (`/explore`) | read-only explorers sweep areas in parallel; findings added to context (no `;` → auto-decomposed) |
 | `/build <task>` (`/tdd`) | implement → a supervising model reviews the diff → fix (up to 2 rounds) |
 | `/supervise on\|off` | auto-review every finalized plan and every executed diff with the 2nd model |
-| `/auto on\|off` | let a model suggest an approach per task (off by default; asks before running) |
+| `/auto on\|off` | enable the `auto-v2` routing policy (off by default; asks before running orchestration) |
 
 ### CLI flags
 
@@ -327,7 +332,7 @@ formats); your session memory stays.
 | `--no-stream` | disable streaming output |
 | `--context N` | override the context window size (tokens) |
 | `--supervise` | start with supervise mode on |
-| `--auto` | let a model suggest an approach per task (off by default) |
+| `--auto` | enable the `auto-v2` routing policy (off by default) |
 | `--no-preflight` | skip the startup model health-check |
 | `--timeout N` | per-request timeout in seconds (default 600; backstop against hangs) |
 | `--max-parallel N` | cap parallel sub-agents (match your LMStudio limit; default 5) |
@@ -465,4 +470,3 @@ Commercial use requires a separate commercial license. See
 [COMMERCIAL-LICENSE.md](./COMMERCIAL-LICENSE.md), or contact Javier Vite via
 LinkedIn to arrange one:
 <https://www.linkedin.com/in/yobbahim-j-vite-b621bb221/>
-

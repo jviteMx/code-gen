@@ -86,6 +86,7 @@ class TrialResult:
     failure: str | None = None
     error: str | None = None
     detail: dict = field(default_factory=dict)
+    routing: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)

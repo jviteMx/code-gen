@@ -4,23 +4,42 @@ commands, and the agentic tool loop."""
 from __future__ import annotations
 
 import json
+from dataclasses import asdict, dataclass, field
 
 from code_agent.coder import model_profiler as mp
 from code_agent.coder import orchestration as orch
 from code_agent.coder import prompts
 from code_agent.coder.coding_tools import (
-    CODING_TOOLS, DISPATCH_AGENTS_TOOL, PLAN_TOOL_NAMES, to_openai_format,
+    CODING_TOOLS,
+    DISPATCH_AGENTS_TOOL,
+    PLAN_TOOL_NAMES,
+    to_openai_format,
 )
 from code_agent.coder.llm import LLMClient
 from code_agent.coder.rules import load_all_rules
 from code_agent.coder.session_memory import SessionMemory
-from code_agent.coder.token_counter import TokenTracker, count_message_tokens, trim_messages_to_fit
+from code_agent.coder.token_counter import (
+    TokenTracker,
+    count_message_tokens,
+    trim_messages_to_fit,
+)
 from code_agent.coder.tool_executor import CodingToolExecutor
 from code_agent.coder.ui import ReplUI, expand_file_mentions
 
 PROGRESS_TOOL_NAMES = {"write_file", "edit_file", "update_memory", "install_package"}
 CYCLE_SOFT_CHECK_ROUNDS = 8
 CYCLE_SOFT_CHECK_INTERVAL = 8
+AUTO_POLICY_VERSION = "auto-v2"
+AUTO_ROUTE_CONFIDENCE = 0.60
+
+
+@dataclass
+class RouteDecision:
+    approach: str = "single"
+    confidence: float = 0.0
+    parallelism: int = 1
+    signals: list[str] = field(default_factory=list)
+    reason: str = ""
 
 
 def _to_anthropic(tools: list[dict]) -> list[dict]:
@@ -61,6 +80,13 @@ class CoderSession:
         self.messages: list[dict] = []
         self.current_plan: str | None = None
         self.recent_diffs: list[str] = []  # applied since the last review
+        self._routing: dict = {
+            "policy_version": AUTO_POLICY_VERSION,
+            "enabled": auto_orchestrate,
+            "events": [],
+        }
+        self._auto_runtime = {"verification_failures": 0, "localization_errors": 0,
+                              "stalled": False}
 
         self._rebuild_tools()
 
@@ -1020,37 +1046,84 @@ class CoderSession:
             self.ui.console.print(f"    [yellow]•[/yellow] {issue}")
 
     def _maybe_suggest(self, user_input: str) -> bool:
-        """With auto-suggest on, ask a model whether the task wants investigate or
-        panel and offer it. Returns True if a pattern ran.
-
-        Everything else falls through to normal single-model handling.
-        """
+        """Classify and, when useful, execute the initial auto-v2 route."""
         if not self.auto_orchestrate or self.mode == "approve":
             return False
-        approach, reason = self._classify_approach(user_input)
-        if approach not in ("investigate", "panel"):
+        decision = self._classify_approach(user_input)
+        selected = decision.approach
+        if selected != "single" and decision.confidence < AUTO_ROUTE_CONFIDENCE:
+            decision.signals.append("below-confidence-threshold")
+            selected = "single"
+        effective = 1 if selected == "single" else min(
+            decision.parallelism, self.max_parallel_agents)
+        event = {"phase": "initial", **asdict(decision), "selected": selected,
+                 "effective_parallelism": effective, "executed": False}
+        self._routing["events"].append(event)
+        self.ui.info(f"[{AUTO_POLICY_VERSION}] route={selected} "
+                     f"confidence={decision.confidence:.2f} parallelism={effective}"
+                     + (f" — {decision.reason}" if decision.reason else ""))
+        if selected not in ("investigate", "panel"):
             return False
         label = {"investigate": "parallel investigation",
-                 "panel": "a multi-model plan panel"}[approach]
-        detail = f" ({reason})" if reason else ""
+                 "panel": "a multi-model plan panel"}[selected]
+        detail = f" ({decision.reason})" if decision.reason else ""
         if not self._authorize(f"A model suggests {label} for this{detail}. Run it?"):
+            event["declined"] = True
             return False
-        (self._cmd_investigate if approach == "investigate" else self._cmd_panel)(user_input)
+        previous = self.max_parallel_agents
+        self.max_parallel_agents = effective
+        try:
+            (self._cmd_investigate if selected == "investigate" else self._cmd_panel)(user_input)
+        finally:
+            self.max_parallel_agents = previous
+        event["executed"] = True
+        event["models"] = self._routing_models(selected, effective)
         return True
 
-    def _classify_approach(self, task: str) -> tuple[str, str]:
-        """Ask a loaded model for the approach; defaults to 'single'."""
+    def _classify_approach(self, task: str) -> RouteDecision:
+        """Ask a loaded model for a validated, structured route decision."""
         router = self._router_client()
         if router is None:
-            return "single", ""
-        router.max_tokens = 200
+            return RouteDecision(reason="no router model available")
+        router.max_tokens = 300
         try:
             turn = router.complete(prompts.APPROACH_CLASSIFIER_PROMPT,
                                    [{"role": "user", "content": task}], [])
-        except Exception:
-            return "single", ""
+        except Exception as exc:
+            return RouteDecision(reason=f"router error: {str(exc)[:100]}")
         data = orch.extract_json(turn.content) or {}
-        return str(data.get("approach", "single")).lower(), str(data.get("reason", ""))[:160]
+        approach = str(data.get("approach", "single")).lower()
+        if approach not in {"single", "investigate", "panel"}:
+            approach = "single"
+        try:
+            confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        try:
+            parallelism = max(1, min(self.max_parallel_agents,
+                                     int(data.get("parallelism", 1))))
+        except (TypeError, ValueError):
+            parallelism = 1
+        if approach == "single":
+            parallelism = 1
+        raw_signals = data.get("signals") or []
+        if not isinstance(raw_signals, list):
+            raw_signals = [raw_signals]
+        signals = [str(x)[:80] for x in raw_signals if str(x).strip()][:6]
+        return RouteDecision(approach, confidence, parallelism, signals,
+                             str(data.get("reason", ""))[:160])
+
+    def routing_summary(self) -> dict:
+        """Machine-readable route evidence for one-shot callers and benchmarks."""
+        return json.loads(json.dumps(self._routing))
+
+    def _routing_models(self, approach: str, parallelism: int) -> list[str]:
+        if approach == "panel":
+            return self._panel_models()[:parallelism]
+        if approach == "investigate":
+            keys = self._auto_chat_keys() or [self.client.model]
+            return [keys[i % len(keys)] for i in range(parallelism)]
+        return [self.client.model]
 
     def _authorize(self, question: str) -> bool:
         if self.auto_approve:
@@ -1134,9 +1207,59 @@ class CoderSession:
             self.current_plan = self._tool_loop(system, self.messages, self.tools_plan, capture_plan=True)
 
     def _handle_direct(self, user_input: str) -> None:
+        self.recent_diffs = []
+        self._auto_runtime = {"verification_failures": 0, "localization_errors": 0,
+                              "stalled": False}
         self._append_user(user_input)
         system = self._active_system(prompts.CODING_SYSTEM_PROMPT)
         self._tool_loop(system, self.messages, self.tools_all)
+        self._auto_runtime_escalate(user_input, system)
+
+    def _auto_runtime_escalate(self, task: str, system: str) -> None:
+        """Apply bounded recovery routes when the direct loop produces evidence it needs help."""
+        if not self.auto_orchestrate:
+            return
+        needs_investigation = (self._auto_runtime["stalled"]
+                               or self._auto_runtime["localization_errors"] >= 2)
+        if needs_investigation and self._authorize(
+                "The direct loop stalled while locating the change. Run a parallel investigation?"):
+            parallelism = min(3, self.max_parallel_agents)
+            event = {"phase": "runtime", "selected": "investigate",
+                     "reason": "direct-loop stall or repeated localization errors",
+                     "effective_parallelism": parallelism, "executed": True,
+                     "models": self._routing_models("investigate", parallelism)}
+            self._routing["events"].append(event)
+            previous = self.max_parallel_agents
+            self.max_parallel_agents = parallelism
+            try:
+                self._cmd_investigate(task)
+            finally:
+                self.max_parallel_agents = previous
+            self.messages.append({"role": "user", "content": (
+                "Use the investigation findings to recover from the stalled attempt. "
+                "Finish the original task and verify the result.")})
+            self._auto_runtime["stalled"] = False
+            self._tool_loop(system, self.messages, self.tools_all)
+
+        if (self._auto_runtime["verification_failures"] >= 2 and self.recent_diffs
+                and self._authorize("Verification failed repeatedly. Run a critic review?")):
+            critic = self._critic_spec()
+            self.ui.info(f"[{AUTO_POLICY_VERSION}] runtime route=review — repeated verification failures")
+            res = orch.critic_review("\n\n".join(self.recent_diffs), "diff", critic)
+            verdict = res.structured or {}
+            self._print_verdict(verdict, res)
+            event = {"phase": "runtime", "selected": "review",
+                     "reason": "two or more failed verification commands",
+                     "effective_parallelism": 1, "executed": True,
+                     "models": [critic.client.model],
+                     "verdict": str(verdict.get("verdict", "unknown"))}
+            self._routing["events"].append(event)
+            issues = verdict.get("issues") or []
+            if verdict.get("verdict") in {"revise", "reject"} and issues:
+                self.messages.append({"role": "user", "content":
+                    "A runtime reviewer found these issues; fix and verify them:\n" +
+                    "\n".join(f"- {issue}" for issue in issues)})
+                self._tool_loop(system, self.messages, self.tools_all)
 
     def _append_user(self, text: str) -> None:
         augmented, attached = expand_file_mentions(text, self.workdir)
@@ -1207,6 +1330,7 @@ class CoderSession:
                 repeat_count += 1
                 if repeat_count >= 3:
                     self.ui.warn("[Warning] Model repeating the same action. Stopping.")
+                    self._auto_runtime["stalled"] = True
                     self._final_nudge(system_prompt, messages, tools)
                     break
             else:
@@ -1257,6 +1381,7 @@ class CoderSession:
                 self.ui.warn("  [interrupted mid-tool]")
                 result = json.dumps({"error": "interrupted by user"})
                 interrupted = True
+            self._observe_auto_tool_result(name, args, result)
             results.append((tc_id, name, result))
             if self.executor.last_display:
                 self.ui.diff(self.executor.last_display)
@@ -1266,6 +1391,28 @@ class CoderSession:
             else:
                 self.ui.tool_result(name, result)
         self.client.append_tool_results(messages, results)
+
+    def _observe_auto_tool_result(self, name: str, args: dict, result: str) -> None:
+        if not self.auto_orchestrate:
+            return
+        try:
+            data = json.loads(result)
+        except (TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(data, dict):
+            return
+        if name in {"read_file", "search_files", "list_files"} and data.get("error"):
+            self._auto_runtime["localization_errors"] += 1
+        if name != "run_command" or not data.get("exit_code"):
+            return
+        command = str(args.get("command", "")).lower()
+        verification_markers = (
+            "pytest", "unittest", "npm test", "npm run test", "npm run build",
+            "pnpm test", "yarn test", "cargo test", "cargo check", "dotnet test",
+            "ruff", "mypy", "pyright", "tsc", "gradle test", "mvn test",
+        )
+        if any(marker in command for marker in verification_markers):
+            self._auto_runtime["verification_failures"] += 1
 
     def _run_dispatch_agents(self, args: dict) -> str:
         """Handle a dispatch_agents call: authorize, then fan out read-only agents."""
@@ -1361,6 +1508,7 @@ class CoderSession:
 
         if status == "stuck":
             self.ui.warn(f"Model says STUCK: {preview}")
+            self._auto_runtime["stalled"] = True
             messages.append({"role": "user", "content": prompts.META_CHECK_PROMPT})
             messages.append({"role": "assistant", "content": text})
             messages.append({"role": "user", "content": prompts.STUCK_FOLLOWUP})

@@ -93,6 +93,7 @@ orchestration setup:
 ```bash
 python -m benchmark.harness.run --agent-args="--supervise" --trials 3
 python -m benchmark.harness.run --agent-args="--supervise --critic-model KEY --max-parallel 2"
+python -m benchmark.harness.run --agent-args="--auto --max-parallel 3" --trials 3
 # in-session: /benchmark --agent-args "--supervise"
 ```
 
@@ -110,7 +111,12 @@ Useful workflow flags (all combinable):
 | `--plan` | plan → auto-approve → execute (re-enables plan mode over the harness's `--no-plan` default) |
 | `--supervise` | a critic model reviews every plan and diff; with one model loaded it self-reviews, with two it cross-reviews |
 | `--critic-model KEY` | pin which model does the critic reviews |
-| `--auto` | the model picks an orchestration pattern per task (a routing policy): a suggested plan-panel auto-executes under `--yes`; a suggested investigation runs first and the task is then implemented with the findings in context |
+| `--auto` | `auto-v2` records route/confidence/signals/parallelism and chooses single, investigation, or a plan panel; runtime stalls and repeated verification failures can trigger bounded recovery routes |
+| `--max-parallel N` | cap workers available to investigation/panel routes. The benchmark default is 1; use 3 for an actual parallel `--auto` comparison |
+
+The spelling is `--max-parallel` (one `l` in *parallel*). A run with `--auto` and
+an effective worker cap of 1 now prints a warning: routing is still active, but
+investigate/panel cannot execute concurrently.
 
 Orchestration multiplies request counts, and big offloaded models are slow to begin
 with — stretch the time budget with `--timeout-scale` so you measure capability, not
@@ -123,6 +129,7 @@ time, `--trials 3`, same timeout scale everywhere):
 
 ```
 /benchmark --trials 3 --timeout-scale 3                                 # bare loop (baseline)
+/benchmark --trials 3 --timeout-scale 3 --agent-args "--auto --max-parallel 3" # auto-v2
 /benchmark --trials 3 --timeout-scale 3 --agent-args "--plan"           # plan→execute
 /benchmark --trials 3 --timeout-scale 3 --agent-args "--plan --supervise"  # + self-critic
 ```
@@ -137,7 +144,8 @@ LM Studio → run again. Results accumulate under `benchmark/results/<run_id>/`:
 
 - `results.json` — all trial data (machine-readable, keeps per-task means for paired
   model comparisons)
-- `report.md` — per-level and per-task tables, pass@1, mean ± SE, failure taxonomy
+- `report.md` — per-level and per-task tables, pass@1, mean ± SE, actual routing
+  counts, configured worker cap, and failure taxonomy
 - `trials/<task>-t<n>/` — `agent.log`, `diff.patch`, `grade.json` per trial
 
 ## Reading the results
@@ -167,8 +175,11 @@ hidden fail-to-pass test passes AND the full regression suite stays green. The
 
 **Before comparing two runs, check `results.json → meta`:** `loaded_models` (must
 contain ONLY the model under test), `loaded_context_length` (≥16k), `agent_args`
-(bare loop vs orchestrated — never cross-compare), `timeout_scale` (scores
-comparable across scales, wall times not), `trials_per_task` (single-trial pass@1
+(bare loop vs workflow-configured; their delta measures workflow uplift, not raw
+model capability), `effective_max_parallel`, and each trial's `routing.events`
+(confirm that auto actually selected and executed orchestration). Also check
+`timeout_scale` (scores comparable across scales, wall times not) and
+`trials_per_task` (single-trial pass@1
 moves by whole tasks — treat n=1 as directional, use `--trials 3` before concluding).
 
 Per-trial evidence lives in `trials/<task>-t<n>/`: `agent.log` (the full session —

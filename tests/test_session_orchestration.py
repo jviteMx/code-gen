@@ -166,9 +166,57 @@ def test_llm_recommend_validates_and_corrects(tmp_path):
 
 def test_classify_approach_reads_router_json(tmp_path):
     s = _session(tmp_path, FakeClient(const=Turn(content="x")))
-    s._router_client = lambda: FakeClient(const=Turn(content='{"approach":"panel","reason":"hard design"}'))
-    approach, reason = s._classify_approach("redesign the scheduler")
-    assert approach == "panel" and "design" in reason
+    s._router_client = lambda: FakeClient(const=Turn(content=(
+        '{"approach":"panel","confidence":0.88,"parallelism":3,'
+        '"signals":["architecture trade-off"],"reason":"hard design"}')))
+    decision = s._classify_approach("redesign the scheduler")
+    assert decision.approach == "panel"
+    assert decision.confidence == 0.88
+    assert decision.parallelism == 3
+    assert "design" in decision.reason
+
+
+def test_auto_route_low_confidence_falls_back_and_is_recorded(tmp_path):
+    s = _session(tmp_path, FakeClient(const=Turn(content="x")), auto_orchestrate=True)
+    s._router_client = lambda: FakeClient(const=Turn(content=(
+        '{"approach":"investigate","confidence":0.4,"parallelism":3,'
+        '"signals":["several layers"],"reason":"possibly cross-layer"}')))
+    assert s._maybe_suggest("change the API and UI") is False
+    event = s.routing_summary()["events"][0]
+    assert event["approach"] == "investigate"
+    assert event["selected"] == "single"
+    assert "below-confidence-threshold" in event["signals"]
+
+
+def test_auto_route_uses_recommended_parallelism_and_records_models(tmp_path, monkeypatch):
+    s = _session(tmp_path, FakeClient(const=Turn(content="x")), auto_orchestrate=True,
+                 auto_approve=True, max_parallel_agents=5)
+    s._router_client = lambda: FakeClient(const=Turn(content=(
+        '{"approach":"investigate","confidence":0.91,"parallelism":3,'
+        '"signals":["unclear ownership"],"reason":"locate in parallel"}')))
+    captured = {}
+    monkeypatch.setattr(s, "_cmd_investigate",
+                        lambda task: captured.update(parallelism=s.max_parallel_agents))
+    monkeypatch.setattr(s, "_routing_models", lambda approach, count: ["fake"] * count)
+    assert s._maybe_suggest("find and fix an unclear cross-layer bug") is True
+    assert captured["parallelism"] == 3
+    event = s.routing_summary()["events"][0]
+    assert event["executed"] is True
+    assert event["effective_parallelism"] == 3
+    assert event["models"] == ["fake", "fake", "fake"]
+
+
+def test_auto_runtime_observes_failed_verification_and_localization(tmp_path):
+    s = _session(tmp_path, FakeClient(const=Turn(content="x")), auto_orchestrate=True)
+    s._observe_auto_tool_result(
+        "run_command", {"command": "python -m pytest"},
+        json.dumps({"exit_code": 1, "stderr": "failed"}),
+    )
+    s._observe_auto_tool_result(
+        "read_file", {"path": "missing.py"}, json.dumps({"error": "not found"}),
+    )
+    assert s._auto_runtime["verification_failures"] == 1
+    assert s._auto_runtime["localization_errors"] == 1
 
 
 def test_auto_suggest_off_by_default(tmp_path):
