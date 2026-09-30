@@ -19,7 +19,9 @@ from code_agent.coder.rules import load_all_rules, load_global_rules, load_proje
 from code_agent.coder.session import CoderSession
 from code_agent.coder.session_memory import SessionMemory
 from code_agent.coder.token_counter import (
-    TokenTracker, get_loaded_model_info, get_model_context_size,
+    TokenTracker,
+    get_loaded_model_info,
+    get_model_context_size,
 )
 from code_agent.coder.tool_executor import CodingToolExecutor
 from code_agent.coder.ui import ReplUI
@@ -36,6 +38,7 @@ def run_coding_session(
     anthropic_model: str = "claude-sonnet-4-20250514",
     provider: str = "lmstudio",
     plan_mode: bool = True,
+    initial_mode: str | None = None,
     context_override: int | None = None,
     max_rounds_override: int | None = None,  # kept for CLI compat, unused
     temperature: float = 0.2,
@@ -99,15 +102,13 @@ def run_coding_session(
         client = anthropic_client
         model_name = anthropic_model
     else:
-        model_info = get_loaded_model_info(lmstudio_url)
         # "default"/empty isn't a routable key with several models loaded, so pick
         # a loaded chat model (never an embedding one).
         if lmstudio_model in ("", "default", None):
             resolved = _first_loaded_chat_model(lmstudio_url)
             if resolved:
                 lmstudio_client.model = resolved
-            elif model_info and model_info.get("key"):
-                lmstudio_client.model = model_info["key"]
+        model_info = get_loaded_model_info(lmstudio_url, model_key=lmstudio_client.model)
         client = lmstudio_client
         model_name = lmstudio_client.model
 
@@ -133,11 +134,13 @@ def run_coding_session(
     )
 
     ui = ReplUI(workdir, history_path=HISTORY_PATH)
-    _print_banner(ui, workdir, provider, model_name, model_info, ctx_size, plan_mode, rules, memory, tracker)
+    mode = initial_mode or ("plan" if plan_mode else "direct")
+    _print_banner(ui, workdir, provider, model_name, model_info, ctx_size, mode, rules, memory, tracker)
 
     session = CoderSession(
         client=client, ui=ui, executor=executor, memory=memory, tracker=tracker,
         workdir=workdir, context=context, rules=rules, plan_mode=plan_mode,
+        initial_mode=initial_mode,
         auto_approve=auto_approve, stream=stream, lmstudio_url=lmstudio_url,
         max_parallel_agents=max_parallel_agents, critic_model=critic_model,
         judge_model=judge_model, supervise=supervise, auto_orchestrate=auto_orchestrate,
@@ -153,14 +156,17 @@ def run_coding_session(
                 f"mix them with /model N or /assign main|critic|judge N.")
     if preflight:
         session.startup_preflight()
-    if oneshot:
-        session.run_oneshot(oneshot_prompt or "")
-        _write_oneshot_stats(workdir, tracker, provider, model_name, memory, session=session)
-        return
     try:
-        session.run()
-    except SystemExit:
-        pass
+        if oneshot:
+            session.run_oneshot(oneshot_prompt or "")
+            _write_oneshot_stats(workdir, tracker, provider, model_name, memory, session=session)
+            return
+        try:
+            session.run()
+        except SystemExit:
+            pass
+    finally:
+        executor.close()
 
 
 def _write_oneshot_stats(workdir: str, tracker, provider: str, model_name: str, memory,
@@ -187,8 +193,8 @@ def _write_oneshot_stats(workdir: str, tracker, provider: str, model_name: str, 
 def _first_loaded_chat_model(lmstudio_url: str) -> str | None:
     """First loaded LMStudio model that is not an embedding model, else None."""
     try:
-        from code_agent.lmstudio import LMStudioManager
         from code_agent.coder import model_profiler as mp
+        from code_agent.lmstudio import LMStudioManager
         for m in LMStudioManager(lmstudio_url).list_models():
             if m.get("loaded") and not mp.profile(m).is_embedding:
                 return m["key"]
@@ -197,7 +203,7 @@ def _first_loaded_chat_model(lmstudio_url: str) -> str | None:
     return None
 
 
-def _print_banner(ui, workdir, provider, model_name, model_info, ctx_size, plan_mode, rules, memory, tracker):
+def _print_banner(ui, workdir, provider, model_name, model_info, ctx_size, mode, rules, memory, tracker):
     c = ui.console
     ui.rule("Local Coding Assistant")
     c.print(f"  [grey58]dir[/grey58]   {workdir}")
@@ -214,7 +220,7 @@ def _print_banner(ui, workdir, provider, model_name, model_info, ctx_size, plan_
     else:
         c.print(f"  [grey58]model[/grey58] {provider} ({model_name})")
     c.print(f"  [grey58]ctx[/grey58]   {ctx_size:,} tokens")
-    c.print(f"  [grey58]mode[/grey58]  {'Plan → Execute' if plan_mode else 'Direct'}")
+    c.print(f"  [grey58]mode[/grey58]  {mode.title()}")
     if rules:
         if load_global_rules():
             c.print("  [grey58]rules[/grey58] global (~/.config/code-agent/rules.md)")

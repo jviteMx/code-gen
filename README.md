@@ -30,13 +30,16 @@ code-agent configure        # writes ~/.config/code-agent/config.toml
 ```
 
 `.env` is searched in `./`, `./.jt/`, then `~/.config/code-agent/`.
+A separate Git worktree has its own `./.env`; export `LMSTUDIO_URL` and
+`LMSTUDIO_MODEL` when testing there if those settings live in another checkout.
 
 ## Usage
 
 ```bash
-code-agent                       # coding assistant in the current directory
+code-agent                       # read-only assistant in the current directory
 code-agent /path/to/repo         # target a specific directory
-code-agent . --no-plan           # skip plan mode
+code-agent . --plan              # start with a reviewable plan
+code-agent . --no-plan           # start in direct coding mode
 code-agent . --provider claude   # force backend for this session
 code-agent . --prompt "add a healthcheck endpoint"
 code-agent . --yes               # auto-approve plans (unattended)
@@ -84,10 +87,36 @@ trimming that won't leave a tool result orphaned. If you want exact token counts
 
 ## Workflow
 
-The normal flow is Plan, Approve, Execute, then repeat.
+The CLI starts at `You [assistant]:` for questions and read-only research.
+Use `/plan` for a reviewable coding plan or `/direct` to edit immediately.
+`--plan` and `--no-plan` select those modes at startup. `/assistant` returns
+to research mode. Headless `--oneshot` tasks keep plan mode by default.
 
-1. **Start** with `code-agent .` (or a path). The banner shows the model, context
-   window, mode, any rules it loaded, and a resumed session if there is one.
+For public research, `web_search` finds current pages, `web_fetch` reads a page,
+and `github_read` reads public GitHub repositories. One approval covers web use
+for the session; `/web off` revokes it and `/web ask` asks again. Search results
+are snippets, so ask the model to open and cite relevant source URLs.
+
+For JavaScript sites, install the optional browser runtime:
+
+```bash
+pip install -e ".[browser]"
+python -m playwright install chromium
+```
+
+`browser_open`, `browser_snapshot`, `browser_fill`, `browser_click`, and
+`browser_close` use a temporary Chromium profile, the same session web
+approval, and public HTTP(S) destinations. Downloads and form navigation via
+POST are blocked. The browser is for public research and search forms; it
+cannot use your normal signed-in browser, book, or purchase. Set
+`CODE_AGENT_BROWSER_HEADED=1` to see the browser window. Sites may still block
+automated browsers or require a CAPTCHA. Example: “Open Skyscanner and search
+for Calgary (YYC) to Halifax (YHZ) on December 24, 2026; report visible fares
+and links, and do not book.”
+
+The plan workflow is:
+
+1. **Start** with `code-agent . --plan` (or type `/plan`).
 2. **Describe the task** at the `You [plan]:` prompt. The model pokes around with
    read-only tools and comes back with a numbered plan ending in
    `Ready to execute this plan? (yes/no/revise)`. If your request is ambiguous it
@@ -275,6 +304,8 @@ Type `/help` in-session for this list. `off`-style toggles accept `on`/`off`.
 
 | Command | Action |
 |---|---|
+| `/assistant` | switch to read-only questions and research |
+| `/web on\|off\|ask` | show or change session-wide public-web permission |
 | `/plan` | switch to plan mode (Plan → Approve → Execute) |
 | `/direct` | switch to direct mode (implement immediately) |
 | `/init` | analyze the codebase and generate a `PROJECT.md` rules file |

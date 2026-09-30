@@ -4,6 +4,8 @@ commands, and the agentic tool loop."""
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 
 from code_agent.coder import model_profiler as mp
@@ -12,6 +14,7 @@ from code_agent.coder import prompts
 from code_agent.coder.coding_tools import (
     CODING_TOOLS,
     DISPATCH_AGENTS_TOOL,
+    INTERNET_TOOL_NAMES,
     PLAN_TOOL_NAMES,
     to_openai_format,
 )
@@ -51,6 +54,7 @@ class CoderSession:
     def __init__(self, *, client: LLMClient, ui: ReplUI, executor: CodingToolExecutor,
                  memory: SessionMemory, tracker: TokenTracker, workdir: str,
                  context: str = "", rules: str = "", plan_mode: bool = True,
+                 initial_mode: str | None = None,
                  auto_approve: bool = False, stream: bool = True,
                  lmstudio_url: str = "http://localhost:1234/v1",
                  max_parallel_agents: int = 5, critic_model: str = "",
@@ -76,7 +80,12 @@ class CoderSession:
         self.supervise = supervise
         self.auto_orchestrate = auto_orchestrate
 
-        self.mode = "plan" if plan_mode else "direct"
+        self.initial_mode = initial_mode or ("plan" if plan_mode else "direct")
+        if self.initial_mode not in {"assistant", "plan", "direct"}:
+            raise ValueError(f"Unknown initial mode: {self.initial_mode}")
+        self.mode = self.initial_mode
+        self._web_access: bool | None = None
+        self._web_access_lock = threading.Lock()
         self.messages: list[dict] = []
         self.current_plan: str | None = None
         self.recent_diffs: list[str] = []  # applied since the last review
@@ -119,7 +128,7 @@ class CoderSession:
             template, workdir=self.workdir, rules=self.rules,
             memory=self.memory.format_for_prompt(), context=self.context, **extra,
         )
-        tools = self.tools_plan if self.mode == "plan" else self.tools_all
+        tools = self.tools_plan if self.mode in {"assistant", "plan"} else self.tools_all
         self.tracker.set_system_tokens(prompt, tools)
         return prompt
 
@@ -147,10 +156,12 @@ class CoderSession:
                     self._handle_approval(user_input)
                     continue
 
-                if self._maybe_suggest(user_input):
+                if self.mode != "assistant" and self._maybe_suggest(user_input):
                     continue
 
-                if self.mode == "plan":
+                if self.mode == "assistant":
+                    self._handle_assistant(user_input)
+                elif self.mode == "plan":
                     self._handle_plan(user_input)
                 else:
                     self._handle_direct(user_input)
@@ -163,12 +174,14 @@ class CoderSession:
             # --auto: let a model pick an orchestration pattern first. The panel
             # path ends in approve mode with a plan; investigation just leaves
             # findings in context for the normal dispatch below.
-            if self._maybe_suggest(prompt) and self.mode == "approve":
+            if self.mode != "assistant" and self._maybe_suggest(prompt) and self.mode == "approve":
                 if self.current_plan:
                     self._handle_approval("yes")
                     return
                 self.mode = "plan" if self.plan_mode else "direct"
-            if self.mode == "plan":
+            if self.mode == "assistant":
+                self._handle_assistant(prompt)
+            elif self.mode == "plan":
                 self._handle_plan(prompt)
             else:
                 self._handle_direct(prompt)
@@ -182,7 +195,8 @@ class CoderSession:
             "quit": self._cmd_quit, "exit": self._cmd_quit, "/quit": self._cmd_quit,
             "clear": self._cmd_clear, "/clear": self._cmd_clear,
             "/help": self._cmd_help,
-            "/plan": self._cmd_plan, "/direct": self._cmd_direct,
+            "/assistant": self._cmd_assistant, "/plan": self._cmd_plan,
+            "/direct": self._cmd_direct, "/web": self._cmd_web,
             "/memory": self._cmd_memory, "/tokens": self._cmd_tokens,
             "/compact": self._cmd_compact, "/continue": self._cmd_continue, "/c": self._cmd_continue,
             "/init": self._cmd_init, "/models": self._cmd_models,
@@ -218,7 +232,8 @@ class CoderSession:
         self.messages.clear()
         self.current_plan = None
         self.memory.clear()
-        self.mode = "plan" if self.plan_mode else "direct"
+        self.executor.close()
+        self.mode = self.initial_mode
         self.ui.success("Conversation and memory cleared.")
 
     def _cmd_help(self, arg: str) -> None:
@@ -228,6 +243,10 @@ class CoderSession:
             self.ui.console.print(f"  [cyan]{cmd}[/cyan]  [grey58]{desc}[/grey58]")
         self.ui.console.print("  [grey58]Enter=send · Alt+Enter=newline · @path attaches a file[/grey58]")
 
+    def _cmd_assistant(self, arg: str) -> None:
+        self.mode = "assistant"
+        self.ui.info("Switched to read-only assistant mode.")
+
     def _cmd_plan(self, arg: str) -> None:
         self.mode = "plan"
         self.ui.info("Switched to plan mode.")
@@ -235,6 +254,25 @@ class CoderSession:
     def _cmd_direct(self, arg: str) -> None:
         self.mode = "direct"
         self.ui.info("Switched to direct mode (no planning).")
+
+    def _cmd_web(self, arg: str) -> None:
+        choice = arg.strip().lower()
+        with self._web_access_lock:
+            if choice == "on":
+                self._web_access = True
+                self.ui.info("Public web access enabled for this session.")
+            elif choice == "off":
+                self._web_access = False
+                self.ui.info("Public web access disabled for this session.")
+            elif choice in {"ask", "reset"}:
+                self._web_access = None
+                self.ui.info("The next public web request will ask for approval.")
+            elif not choice:
+                status = ("not decided" if self._web_access is None else
+                          "enabled" if self._web_access else "disabled")
+                self.ui.info(f"Public web access: {status}. Use /web on|off|ask.")
+            else:
+                self.ui.warn("Usage: /web on|off|ask")
 
     def _cmd_memory(self, arg: str) -> None:
         text = self.memory.format_for_prompt()
@@ -1134,6 +1172,19 @@ class CoderSession:
             return False
         return ans in ("y", "yes")
 
+    def _authorize_web(self, request: str) -> bool:
+        with self._web_access_lock:
+            if self._web_access is None:
+                question = (
+                    "Allow public web research for this session? "
+                    "This covers web search, page and GitHub reads, and browser research. "
+                    f"First request: {request}"
+                )
+                self._web_access = self._authorize(question)
+                state = "enabled" if self._web_access else "disabled"
+                self.ui.info(f"Public web access {state}. Use /web off|ask to change it.")
+            return self._web_access
+
     def _review_target(self, arg: str):
         from pathlib import Path
         arg = arg.strip()
@@ -1152,6 +1203,11 @@ class CoderSession:
         return None, ""
 
     # ── mode handlers ─────────────────────────────────────────────────────
+
+    def _handle_assistant(self, user_input: str) -> None:
+        self._append_user(user_input)
+        system = self._active_system(prompts.ASSISTANT_SYSTEM_PROMPT)
+        self._tool_loop(system, self.messages, self.tools_plan)
 
     def _handle_plan(self, user_input: str) -> None:
         if not self.memory.goal:
@@ -1375,8 +1431,23 @@ class CoderSession:
             if name == "dispatch_agents":
                 results.append((tc_id, name, self._run_dispatch_agents(args)))
                 continue
+            if self.mode in {"assistant", "plan"} and name not in PLAN_TOOL_NAMES:
+                result = json.dumps({"error": f"Tool {name} is unavailable in this mode"})
+                results.append((tc_id, name, result))
+                self.ui.tool_result(name, result)
+                continue
+            if name in INTERNET_TOOL_NAMES and name != "browser_close" and not self._authorize_web(
+                self._web_approval_question(name, args)
+            ):
+                result = json.dumps({"error": "Internet access denied by user"})
+                results.append((tc_id, name, result))
+                self.ui.tool_result(name, result)
+                continue
             try:
-                result = self.executor.execute(name, args)
+                activity = getattr(self.ui, "tool_activity", None)
+                progress = activity(name) if callable(activity) else nullcontext()
+                with progress:
+                    result = self.executor.execute(name, args)
             except KeyboardInterrupt:
                 self.ui.warn("  [interrupted mid-tool]")
                 result = json.dumps({"error": "interrupted by user"})
@@ -1391,6 +1462,13 @@ class CoderSession:
             else:
                 self.ui.tool_result(name, result)
         self.client.append_tool_results(messages, results)
+
+    @staticmethod
+    def _web_approval_question(name: str, args: dict) -> str:
+        target = args.get("query") or args.get("url") or args.get("target")
+        if name == "github_read":
+            target = f"{args.get('owner', '')}/{args.get('repo', '')}/{args.get('path', '')}"
+        return f"Use {name}: {str(target or 'current browser page')[:160]}?"
 
     def _observe_auto_tool_result(self, name: str, args: dict, result: str) -> None:
         if not self.auto_orchestrate:
