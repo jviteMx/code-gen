@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 — 2026-09-30
+
+### Added
+
+- Read-only assistant mode for questions and public-web research at CLI startup.
+- Public `web_search`, `web_fetch`, and `github_read` tools with bounded results and source URLs.
+- Optional isolated Chromium browser tools to inspect JavaScript pages and use search forms.
+- Session-wide web approval with `/web on`, `/web off`, and `/web ask` controls.
+- Visible progress while web and browser tools run.
+
+### Security
+
+- Public destination checks, redirect validation, and limits on response size and browser requests.
+- Browser sessions use temporary profiles; downloads and form POST navigation are blocked.
+
 ## 0.2.0 — 2026-08-18
 
 ### Added

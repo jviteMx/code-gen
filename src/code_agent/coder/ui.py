@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from rich.console import Console
@@ -18,6 +19,8 @@ from rich.text import Text
 # imported lazily inside ReplUI so a non-TTY or import failure can fall back to input()
 
 SLASH_COMMANDS = {
+    "/assistant": "switch to read-only assistant mode for questions and research",
+    "/web": "show or change this session public-web permission: /web on|off|ask",
     "/plan": "switch to plan mode",
     "/direct": "switch to direct (no-plan) mode",
     "/init": "generate PROJECT.md from the codebase",
@@ -58,11 +61,11 @@ class ReplUI:
 
     def _build_session(self, history_path: Path | None) -> None:
         try:
-            from prompt_toolkit import PromptSession
-            from prompt_toolkit.history import FileHistory
-            from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-            from prompt_toolkit.key_binding import KeyBindings
             import prompt_toolkit as pt
+            from prompt_toolkit import PromptSession
+            from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+            from prompt_toolkit.history import FileHistory
+            from prompt_toolkit.key_binding import KeyBindings
 
             if not sys.stdin.isatty():
                 return  # piped input, use the plain fallback
@@ -114,6 +117,7 @@ class ReplUI:
     def read(self, mode: str) -> str:
         """Read one message from the user. Raises EOFError/KeyboardInterrupt to quit."""
         label = {
+            "assistant": ("You [assistant]", "#50fa7b"),
             "plan": ("You [plan]", "#8be9fd"),
             "approve": ("Approve? (yes/no/revise)", "#f1fa8c"),
         }.get(mode, ("You", "#50fa7b"))
@@ -174,6 +178,24 @@ class ReplUI:
             arg_str = arg_str[:160] + "…"
         self.console.print(f"  [cyan]▶ {name}[/cyan] [grey58]{_rich_escape(arg_str)}[/grey58]")
 
+    @contextmanager
+    def tool_activity(self, name: str):
+        labels = {"web_search": "Searching the web…", "web_fetch": "Reading web page…",
+                  "github_read": "Reading public GitHub repository…",
+                  "browser_open": "Opening browser page…",
+                  "browser_snapshot": "Inspecting browser page…",
+                  "browser_fill": "Filling browser form…",
+                  "browser_click": "Interacting with browser page…"}
+        label = labels.get(name)
+        if label is None:
+            yield
+        elif self.console.is_terminal:
+            with self.console.status(f"[cyan]{label}[/cyan]", spinner="dots"):
+                yield
+        else:
+            self.console.print(f"    {label}")
+            yield
+
     def tool_result(self, name: str, result_json: str) -> None:
         """Show a compact result for shell/install; diffs are shown separately."""
         try:
@@ -187,6 +209,13 @@ class ReplUI:
                 for line in str(r["did_you_mean"]).splitlines()[:8]:
                     self.console.print(f"      [grey58]{_rich_escape(line)}[/grey58]")
             return
+        if name == "web_search" and isinstance(r, dict):
+            self.console.print(f"    [green]Search complete:[/green] {r.get('count', 0)} result(s)")
+        elif name in ("web_fetch", "github_read") and isinstance(r, dict):
+            self.console.print("    [green]Read complete.[/green]")
+        elif name.startswith("browser_") and isinstance(r, dict):
+            label = r.get("title") or r.get("url") or "Browser action complete"
+            self.console.print(f"    [green]{_rich_escape(str(label)[:100])}[/green]")
         if name in ("run_command", "install_package") and isinstance(r, dict):
             code = r.get("exit_code")
             if code is not None:

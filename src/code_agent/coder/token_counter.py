@@ -290,8 +290,10 @@ def get_model_context_size(
     return 8192  # last-resort fallback
 
 
-def get_loaded_model_info(lmstudio_url: str = "http://localhost:1234/v1") -> dict | None:
-    """Get info about the currently loaded model in LMStudio."""
+def get_loaded_model_info(
+    lmstudio_url: str = "http://localhost:1234/v1", model_key: str | None = None,
+) -> dict | None:
+    """Get info about a selected loaded model, or the first loaded model."""
     import requests
 
     base = lmstudio_url.rstrip("/")
@@ -302,7 +304,7 @@ def get_loaded_model_info(lmstudio_url: str = "http://localhost:1234/v1") -> dic
         resp = requests.get(f"{base}/api/v1/models", timeout=10)
         if resp.ok:
             for m in resp.json().get("models", []):
-                if m.get("loaded_instances"):
+                if m.get("loaded_instances") and (model_key is None or m.get("key") == model_key):
                     return {
                         "key": m.get("key", "unknown"),
                         "display_name": m.get("display_name", m.get("key", "unknown")),

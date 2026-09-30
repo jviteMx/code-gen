@@ -78,7 +78,12 @@ def main() -> None:
         provider = "lmstudio"
 
     from code_agent.coder.loop import run_coding_session
+    initial_mode = (
+        "plan" if args.plan else "direct" if args.no_plan else
+        "plan" if args.oneshot else "assistant"
+    )
     run_coding_session(
+        initial_mode=initial_mode,
         workdir=args.path,
         context=args.prompt or "",
         lmstudio_url=config.lmstudio_url,

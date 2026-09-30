@@ -104,3 +104,22 @@ def test_mention_escape_blocked(tmp_path):
 def test_mention_ignores_nonexistent(tmp_path):
     aug, attached = expand_file_mentions("email me @someone about it", str(tmp_path))
     assert attached == [] and aug == "email me @someone about it"
+
+
+def test_loaded_model_info_follows_selected_model(monkeypatch):
+    from code_agent.coder.token_counter import get_loaded_model_info
+
+    class Response:
+        ok = True
+
+        def json(self):
+            return {"models": [
+                {"key": "large", "display_name": "Large", "loaded_instances": [{}],
+                 "max_context_length": 100000},
+                {"key": "small", "display_name": "Small", "loaded_instances": [{}],
+                 "max_context_length": 32000},
+            ]}
+
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: Response())
+    assert get_loaded_model_info(model_key="small")["display_name"] == "Small"
+    assert get_loaded_model_info(model_key="small")["max_context_length"] == 32000

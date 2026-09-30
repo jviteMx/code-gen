@@ -13,9 +13,12 @@ import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from code_agent.coder.browser_tools import BrowserSession
 from code_agent.coder.session_memory import SessionMemory
+from code_agent.coder.web_tools import github_read, web_fetch, web_search
 
 # Dirs we skip when searching/listing.
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache",
@@ -28,6 +31,8 @@ class CodingToolExecutor:
         self._memory = memory
         # Set after a write/edit for the UI to render; the model only sees the JSON return.
         self.last_display: dict | None = None
+        self._browser_worker: ThreadPoolExecutor | None = None
+        self._browser: BrowserSession | None = None
 
     def execute(self, tool_name: str, arguments: dict) -> str:
         self.last_display = None
@@ -182,6 +187,55 @@ class CodingToolExecutor:
             if result is not None:
                 return result
         return self._search_python(pattern, dirpath, file_pattern)
+
+    # ── Public internet (authorization is enforced by CoderSession) ──
+
+    def _handle_web_search(self, query: str, max_results: int = 5) -> dict:
+        return web_search(query, max_results=max_results)
+
+    def _handle_web_fetch(self, url: str, max_chars: int = 12000) -> dict:
+        return web_fetch(url, max_chars=max_chars)
+
+    def _handle_github_read(
+        self, owner: str, repo: str, path: str = "", ref: str = "",
+    ) -> dict:
+        return github_read(owner, repo, path=path, ref=ref)
+
+    # ── Isolated public browser ────────────────────────────────────────
+
+    def _browser_call(self, method: str, **kwargs) -> dict:
+        if self._browser_worker is None:
+            self._browser_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="code-agent-browser")
+        def invoke() -> dict:
+            if self._browser is None:
+                self._browser = BrowserSession()
+            return getattr(self._browser, method)(**kwargs)
+        return self._browser_worker.submit(invoke).result(timeout=60)
+
+    def _handle_browser_open(self, url: str) -> dict:
+        return self._browser_call("open", url=url)
+
+    def _handle_browser_snapshot(self, max_chars: int = 12000) -> dict:
+        return self._browser_call("snapshot", max_chars=max_chars)
+
+    def _handle_browser_fill(self, target: str, value: str, by: str = "label") -> dict:
+        return self._browser_call("fill", target=target, value=value, by=by)
+
+    def _handle_browser_click(self, target: str, by: str = "role", role: str = "button") -> dict:
+        return self._browser_call("click", target=target, by=by, role=role)
+
+    def _handle_browser_close(self) -> dict:
+        return self._browser_call("close")
+
+    def close(self) -> None:
+        if self._browser_worker is not None:
+            try:
+                if self._browser is not None:
+                    self._browser_worker.submit(self._browser.close).result(timeout=15)
+            finally:
+                self._browser_worker.shutdown(wait=False, cancel_futures=True)
+                self._browser_worker = None
+                self._browser = None
 
     def _search_ripgrep(
         self, rg: str, pattern: str, dirpath: Path, file_pattern: str | None
